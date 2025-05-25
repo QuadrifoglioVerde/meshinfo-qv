@@ -17,7 +17,7 @@ class MeshtasticMonday:
             if day != "1":
                 continue
             text = chat["text"]
-            if "meshtasticmonday" not in text.lower():
+            if "meshpondeli" not in text.lower():
                 continue
             frm = chat["from"]
             current = frm + "." + text

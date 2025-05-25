@@ -4,14 +4,24 @@
 
 {% block content %}
 <div class="container pt-3">
-  <img src="/images/logo.png" alt="logo" style="height: 250px">
   <h2>{{ config["mesh"]["name"] }}</h2>
   <p>
-    This site provides information on <a href="nodes.html"><span class="font-weight-bold">{{ active_nodes|length }}</span> active nodes</a> in the South African Meshtastic network.
+    Tato stránka obsahuje informace o <a href="nodes.html"><span class="font-weight-bold">{{ active_nodes|length }}</span> aktivních</a> uzlech sítě Meshtastic, převážně na Moravě.
   </p>
   <p>
-  Check out the '<a href="https://gadgeteer.co.za/hamradio/meshtastic-in-south-africa/">Meshtastic in South Africa</a>' blog post from GadgeteerZA for more information, or join our <a href="https://bit.ly/buildthemesh">Discord</a> community.
+    Pokud chcete sbírat data i ze svých uzlů tak je potřeba nastavit MQTT:<br>
+    <b>HOST: <i>mqtt.aperturelab.cz</i></b><br>
+    <b>USER: <i>meshuser</i></b><br>
+    <b>PASS: <i>meshpass</i></b><br>
+    <b>TOPIC: <i>Volitelný (msh/CZ nebo msh/EU_868), stejný topic se poté předává dále</i></b><br>
+    <br>
+    Zároveň funguje také jako bridge a vaše data se dále posílají na tyto servery:<br>
+    <b>mqtt.meshtastic.liamcottle.net</b><br>
+    <b>mqtt.meshtastic.org</b>
   </p>
-  <p>Last updated: {{ timestamp.strftime('%Y-%m-%d %H:%M:%S %z') }}</p>
+  <p>Poslední Aktualizace: {{ timestamp.strftime('%d.%m.%Y %H:%M:%S') }}</p>
+</div>
+<div class="text-center w-100 mt-5 mb-3" style="color: #505050">
+  Původní zdroj <a href="https://github.com/dadecoza/meshinfo-lite">MeshInfo-Lite</a>.
 </div>
 {% endblock %}

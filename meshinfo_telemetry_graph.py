@@ -1,9 +1,9 @@
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import datetime
 import io
 import base64
 import json
-
 
 def draw_graph(telemetry):
 
@@ -24,25 +24,28 @@ def draw_graph(telemetry):
     ]
 
     # Create the plot
-    fig, ax1 = plt.subplots(figsize=(10, 5))
+    fig, ax1 = plt.subplots(figsize=(10, 4))
+
+    # Format x-axis with day.month hour
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m %Hh'))
 
     # Plot air_util_tx and channel_utilization on left y-axis
-    ax1.set_xlabel("Time")
+    ax1.set_xlabel("Čas")
     ax1.set_ylabel(
-        "Air Util TX / Channel Utilization / Battery Level",
+        "Vytížení TX / Obsazenost Kanálu / Baterie",
         color="tab:blue"
     )
     ax1.plot(
         time_stamps,
         data["air_util_tx"],
-        label="Air Util TX",
+        label="Vytížení TX",
         marker="o",
         color="tab:blue"
     )
     ax1.plot(
         time_stamps,
         data["channel_utilization"],
-        label="Channel Utilization",
+        label="Obsazenost Kanálu",
         marker="s",
         linestyle="dashed",
         color="tab:purple"
@@ -50,14 +53,14 @@ def draw_graph(telemetry):
     ax1.plot(
         time_stamps,
         data["battery_level"],
-        label="Battery Level",
+        label="Baterie",
         marker="^",
         linestyle="dotted",
         color="tab:red"
     )
     ax1.tick_params(axis="y", labelcolor="tab:blue")
 
-    plt.title("24hr Telemetry Data")
+    plt.title("Telemetrie Uzlu za posledních 24h")
     fig.tight_layout()
     ax1.legend(loc="upper left")
     # Save the plot to a BytesIO buffer

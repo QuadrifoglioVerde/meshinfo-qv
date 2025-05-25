@@ -6,30 +6,39 @@ from flask import (
     make_response,
     redirect,
     url_for,
-    abort
+    abort,
+    flash
 )
 from waitress import serve
 from paste.translogger import TransLogger
 import configparser
 import logging
 import os
-
 import utils
 import meshtastic_support
 from meshdata import MeshData
 from meshinfo_register import Register
 from meshtastic_monday import MeshtasticMonday
 from meshinfo_telemetry_graph import draw_graph
+from meshinfo_env_graph import draw_env_graph
 from meshinfo_los_profile import LOSProfile
+from PIL import Image, ImageOps
 import json
 import datetime
 import time
 import re
+import concurrent.futures
 
 app = Flask(__name__)
 
 config = configparser.ConfigParser()
 config.read("config.ini")
+
+UPLOAD_FOLDER = 'www/nodes'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 3 * 1024 * 1024
+app.secret_key = 'g15r65g1rb65rv1g5rfv516ff5fffff555'
 
 
 def auth():
@@ -40,6 +49,9 @@ def auth():
     decoded_jwt = reg.auth(jwt)
     return decoded_jwt
 
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 @app.errorhandler(404)
 def not_found(e):
@@ -48,6 +60,19 @@ def not_found(e):
         auth=auth,
         config=config
     ), 404
+
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    flash('Soubor je příliš velký. Maximální velikost je 3 MB.')
+    return redirect(request.referrer)
+
+
+@app.template_filter('file_exists')
+def file_exists_filter(filepath):
+    """Check if a file exists in the static folder."""
+    full_path = os.path.join(app.config['UPLOAD_FOLDER'], filepath)
+    return os.path.isfile(full_path)
 
 
 # Serve static files from the root directory
@@ -106,17 +131,38 @@ def allnodes():
     )
 
 
+@app.route('/logs.html')
+def logs():
+    md = MeshData()
+    return render_template(
+        "logs.html.j2",
+        auth=auth(),
+        config=config,
+        utils=utils,
+        datetime=datetime.datetime,
+        timestamp=datetime.datetime.now(),
+        json=json
+    )
+
+
 @app.route('/chat.html')
 def chat():
-    md = MeshData()
-    nodes = md.get_nodes()
-    chat = md.get_chat()
     return render_template(
         "chat.html.j2",
         auth=auth(),
         config=config,
-        nodes=nodes,
-        chat=chat,
+        utils=utils,
+        datetime=datetime.datetime,
+        timestamp=datetime.datetime.now(),
+    )
+
+
+@app.route('/chat_mobile.html')
+def chat_mobile():
+    return render_template(
+        "chat_mobile.html.j2",
+        auth=auth(),
+        config=config,
         utils=utils,
         datetime=datetime.datetime,
         timestamp=datetime.datetime.now(),
@@ -155,6 +201,56 @@ def map():
     )
 
 
+@app.route('/tools/upload_image', methods=['POST'])
+def upload_image():
+    owner = auth()
+    if not owner:
+        flash('Musíte být přihlášeni, abyste mohli nahrát obrázek.')
+        return redirect(url_for('login'))
+
+    if 'image' not in request.files:
+        flash('Nebyl vybrán žádný soubor.')
+        return redirect(request.referrer)
+
+    file = request.files['image']
+    node_id = request.form.get('node_id')
+
+    if not node_id:
+        flash('Chybí ID uzlu.')
+        return redirect(request.referrer)
+
+    md = MeshData()
+    nodes = md.get_nodes()
+    mynodes = utils.get_owner_nodes(nodes, owner["email"])
+    if node_id not in mynodes:
+        flash('Nemáte oprávnění nahrát soubor k tomuto uzlu.')
+        return redirect(request.referrer)
+
+    if file.filename == '':
+        flash('Nebyl vybrán žádný soubor.')
+        return redirect(request.referrer)
+
+    if file and allowed_file(file.filename):
+        try:
+            img = Image.open(file)
+            img = ImageOps.exif_transpose(img) 
+            img = img.convert("RGB")
+            img.thumbnail((1000, 1000))
+            filename = f"{node_id}.jpg"
+            save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            img.save(save_path, "JPEG", quality=90)
+
+            flash(f'Obrázek vašeho uzlu {node_id} byl aktualizován.')
+            return redirect(request.referrer)
+        except Exception as e:
+            logging.error(f"Chyba při zpracování souboru: {e}")
+            flash('Došlo k chybě při zpracování souboru.')
+            return redirect(request.referrer)
+    else:
+        flash('Povolené typy souborů jsou: png, jpg, jpeg.')
+        return redirect(request.referrer)
+
+
 @app.route('/neighbors.html')
 def neighbors():
     md = MeshData()
@@ -164,6 +260,16 @@ def neighbors():
         for node_id, node in nodes.items()
         if node.get("active") and node.get("neighbors")
     }
+
+    # Seřadíme sousedy každého uzlu podle SNR
+    for node_id, node in active_nodes_with_neighbors.items():
+        if node.get("neighbors"):
+            node["neighbors"] = sorted(
+                node["neighbors"],
+                key=lambda neighbor: neighbor.get('snr') if neighbor.get('snr') is not None else 0,  # Použijeme 0 místo None pro bezpečné třídění
+                reverse=True
+            )
+
     return render_template(
         "neighbors.html.j2",
         auth=auth(),
@@ -207,22 +313,6 @@ def traceroutes():
         utils=utils,
         datetime=datetime.datetime,
         timestamp=datetime.datetime.now(),
-    )
-
-
-@app.route('/logs.html')
-def logs():
-    md = MeshData()
-    logs = md.get_logs()
-    return render_template(
-        "logs.html.j2",
-        auth=auth(),
-        config=config,
-        logs=logs,
-        utils=utils,
-        datetime=datetime.datetime,
-        timestamp=datetime.datetime.now(),
-        json=json
     )
 
 
@@ -352,23 +442,68 @@ def verify():
     return serve_index()
 
 
+@app.route('/debug.html')
+def debug():
+    import subprocess
+    try:
+        log = subprocess.check_output([
+            'journalctl', '-u', 'meshinfo', '-n', '50', '--no-pager'
+        ], stderr=subprocess.STDOUT, text=True)
+    except Exception as e:
+        log = f'Chyba při čtení logu: {e}'
+    return render_template(
+        "debug.html.j2",
+        auth=auth(),
+        config=config,
+        log=log,
+        timestamp=datetime.datetime.now()
+    )
+
+
 @app.route('/<path:filename>')
 def serve_static(filename):
+    #start_time = time.time()
+    #app.logger.info(f"Start time: {start_time}")
     nodep = r"node\_(\w{8})\.html"
     userp = r"user\_(\w+)\.html"
 
     if re.match(nodep, filename):
         md = MeshData()
+        #app.logger.info(f"MeshData initialization: {time.time() - start_time:.4f}s")
+
         match = re.match(nodep, filename)
         node = match.group(1)
-        nodes = md.get_nodes()
+        nodes = md.get_nodes(active=True)
+        #app.logger.info(f"getting nodes: {time.time() - start_time:.4f}s")
+
+        if node not in nodes:
+            nodes = md.get_nodes(active=False)
+
         if node not in nodes:
             abort(404)
+
         node_id = utils.convert_node_id_from_hex_to_int(node)
+        #app.logger.info(f"converting node ID: {time.time() - start_time:.4f}s")
+
         node_telemetry = md.get_node_telemetry(node_id)
+        #app.logger.info(f"getting node telemetry: {time.time() - start_time:.4f}s")
+
+        node_env_telemetry = md.get_node_env_telemetry(node_id)
+        #app.logger.info(f"getting node environment telemetry: {time.time() - start_time:.4f}s")
+
         node_route = md.get_route_coordinates(node_id)
-        telemetry_graph = draw_graph(node_telemetry)
+        #app.logger.info(f"getting node route: {time.time() - start_time:.4f}s")
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            telemetry_future = executor.submit(draw_graph, node_telemetry)
+            env_future = executor.submit(draw_env_graph, node_env_telemetry)
+            telemetry_graph = telemetry_future.result()
+            env_graph = env_future.result()
+        #app.logger.info(f"getting graphs: {time.time() - start_time:.4f}s")
+
         lp = LOSProfile(nodes, node_id)
+        #app.logger.info(f"creating LOSProfile: {time.time() - start_time:.4f}s")
+
         return render_template(
                 f"node.html.j2",
                 auth=auth(),
@@ -379,6 +514,7 @@ def serve_static(filename):
                 meshtastic_support=meshtastic_support,
                 los_profiles=lp.get_profiles(),
                 telemetry_graph=telemetry_graph,
+                env_graph=env_graph,
                 node_route=node_route,
                 utils=utils,
                 datetime=datetime.datetime,

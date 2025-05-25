@@ -1,5 +1,6 @@
 import meshinfo_web
 import meshinfo_mqtt
+import meshinfo_api
 from meshdata import MeshData, create_database
 import threading
 import logging
@@ -92,10 +93,6 @@ if not os.path.isfile(config_file):
     print(f"Error: Configuration file '{config_file}' not found!")
     sys.exit(1)
 
-fh = open("banner", "r")
-logger.info(fh.read())
-fh.close()
-
 logger.info("Setting up database")
 db_connected = False
 for i in range(10):
@@ -114,9 +111,12 @@ if not db_connected:
 
 thread_mqtt = threading.Thread(target=threadwrap(meshinfo_mqtt.run))
 thread_web = threading.Thread(target=threadwrap(meshinfo_web.run))
+thread_api = threading.Thread(target=threadwrap(meshinfo_api.run))
 
 thread_mqtt.start()
 thread_web.start()
+thread_api.start()
 
 thread_mqtt.join()
 thread_web.join()
+thread_api.join()

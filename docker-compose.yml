@@ -1,22 +1,10 @@
 services:
-  mariadb:
-    image: mariadb
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: passw0rd
-      MYSQL_DATABASE: meshdata
-      MYSQL_USER: meshdata
-      MYSQL_PASSWORD: passw0rd
-    volumes:
-      - ./mysql_data:/var/lib/mysql
-    networks:
-      - backend
   meshinfo:
     image: ghcr.io/dadecoza/meshinfo-lite:0.1.5-za
-    depends_on:
-      - mariadb
     volumes:
       - ./config.ini:/app/config.ini
+      - ./process_payload.py:/app/process_payload.py
+      - ./templates:/app/templates
     environment:
       - PYTHONUNBUFFERED=1
     ports:

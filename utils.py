@@ -88,28 +88,21 @@ def latlon_to_grid(lat, lon):
         + chr(int(lat / 10) + ord("A"))
         + str(int((lon % 20) / 2))
         + str(int((lat % 10) / 1))
-        + chr(int((lon % 2) * 12) + ord("a"))
-        + chr(int((lat % 1) * 24) + ord("a"))
+        + chr(int((lon % 2) * 12) + ord("A"))
+        + chr(int((lat % 1) * 24) + ord("A"))
     )
 
 
 def graph_icon(name):
     """Return the appropriate icon for a given node name."""
     icons = {
-        "qth": "house",
-        "home": "house",
-        "base": "house",
-        "main": "house",
-        "mobile": "car",
-        " hs": "tower",
-        "router": "tower",
-        "edc": "heltec",
-        "mqtt": "computer",
-        "bridge": "computer",
-        "gateway": "computer",
-        "meshtastic": "meshtastic",
+        "🚘": "car",
+        "🌐": "mqtt",
+        "🤖": "bbs",
+        "🗼": "tower",
+        "gw": "computer",
         "bbs": "bbs",
-        "narf": "narf"
+        "meshtastic": "meshtastic"
     }
     for key, icon in icons.items():
         if key in name.lower():
@@ -138,26 +131,49 @@ def time_since_bak(epoch_timestamp):
     """Convert an epoch timestamp to a human-readable duration."""
     elapsed_seconds = int(time.time()) - epoch_timestamp
     if elapsed_seconds < 0:
-        return "The timestamp is in the future!"
+        return "časové razítko je v budoucnosti!"
     time_units = [
-        ("day", elapsed_seconds // 86400),
-        ("hour", (elapsed_seconds % 86400) // 3600),
-        ("minute", (elapsed_seconds % 3600) // 60),
-        ("second", elapsed_seconds % 60),
+        ("d", elapsed_seconds // 86400),
+        ("hod", (elapsed_seconds % 86400) // 3600),
+        ("min", (elapsed_seconds % 3600) // 60),
+        ("sec", elapsed_seconds % 60),
     ]
     return ", ".join(
         f"{int(value)} {unit}{'s' if value > 1 else ''}"
         for unit, value in time_units if value > 0
-    ) or "Just now"
+    ) or "Právě teď!"	
 
+
+# def time_since(epoch_timestamp):
+#     diff = epoch_timestamp - time.time()  # Calculate the difference
+#     sign = "-" if diff < 0 else ""
+#     diff = abs(diff)  # Work with absolute difference
+#     td = timedelta(seconds=diff)
+
+#     total_seconds = int(td.total_seconds())
+#     hours = total_seconds // 3600
+#     minutes = (total_seconds % 3600) // 60
+#     seconds = total_seconds % 60
+
+#     formatted_diff = f"{sign}{hours:02}:{minutes:02}:{seconds:02}"
+#     return formatted_diff
 
 def time_since(epoch_timestamp):
     diff = epoch_timestamp - time.time()  # Calculate the difference
-    sign = "-" if diff < 0 else ""
     diff = abs(diff)  # Work with absolute difference
     td = timedelta(seconds=diff)
-    formatted_diff = f"{sign}{td.seconds // 3600:02}:{(td.seconds % 3600) // 60:02}:{td.seconds % 60:02}"
-    return formatted_diff
+
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+
+    if hours > 0:
+        return f"{hours}hod, {minutes}min"
+    elif minutes > 0:
+        return f"{minutes}min, {seconds}sec"
+    else:
+        return f"{seconds}sec"
 
 
 def active_nodes(nodes):
@@ -216,7 +232,7 @@ def send_email(recipient_email, subject, message):
         # Connect to SMTP server
         server = smtplib.SMTP(smtp_server, smtp_port)
         server.starttls()  # Secure the connection
-        server.login(sender_email, sender_password)  # Login to your email
+        server.login("apikey", sender_password)  # Login to your email
         server.send_message(msg)  # Send email
         server.quit()  # Close connection
 

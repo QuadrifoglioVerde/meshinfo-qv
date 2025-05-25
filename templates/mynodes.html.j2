@@ -1,16 +1,63 @@
 {% set this_page = "my nodes" %}
 {% extends "layout.html.j2" %}
 
-{% block title %}My Nodes | MeshInfo{% endblock %}
+{% block title %}Moje Uzly | MeshInfo{% endblock %}
 
 {% block content %}
+
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <div id="flash-message" class="alert alert-success" role="alert">
+      {{ messages[0] }}
+    </div>
+    <script>
+      // Skript pro automatické skrytí zprávy po 10 sekundách
+      setTimeout(function() {
+        var flashMessage = document.getElementById('flash-message');
+        if (flashMessage) {
+          flashMessage.style.transition = 'opacity 0.5s ease';
+          flashMessage.style.opacity = '0';
+          setTimeout(function() {
+            flashMessage.remove();
+          }, 500); // Počkejte na dokončení přechodu
+        }
+      }, 10000); // 10 sekund
+    </script>
+  {% endif %}
+{% endwith %}
+
 <div class="container pt-3">
-<h5>{{ this_page.title() }}</h5>
-{% if nodes %}
-  {% include 'node_table.html.j2' %}
-{% else %}
-  </p>You don't have any linked nodes.<p>
-{% endif %}
-<div><a href="{{ url_for("link_node") }}" class="btn btn-info" role="button">Link node</a></div>
+  <h5>Moje Uzly</h5>
+  {% if nodes %}
+    {% include 'node_table.html.j2' %}
+  {% else %}
+    <p>Nemáš žádné spárované uzly, tlačítkem níže můžeš nějaky spárovat.</p>
+  {% endif %}
+  <div>
+    <a href="{{ url_for('link_node') }}" class="btn btn-info" role="button">Spárovat Uzel</a>
+  </div>
+</div>
+
+<!-- Image Upload Form -->
+<div class="table-responsive mt-4">
+  <div class="p-4 border rounded shadow-sm bg-light mx-auto" style="max-width: 500px;">
+    <h6 class="mb-3 text-primary">Nahrát obrázek k uzlu (maximální velikost je 3MB)</h6>
+    <form action="/tools/upload_image" method="POST" enctype="multipart/form-data">
+      <div class="mb-3">
+         <label for="node_id" class="form-label fw-bold">ID Uzlu</label>
+         <select class="form-control border-primary" id="node_id" name="node_id" required>
+           <option value="" disabled selected>Vyber uzel</option>
+           {% for id, node in nodes.items() %}
+             <option value="{{ id }}">{{ node.long_name }} ({{ id }})</option>
+           {% endfor %}
+         </select>
+      </div>
+      <div class="mb-3">
+         <label for="image" class="form-label fw-bold">Vyber obrázek</label>
+         <input type="file" class="form-control border-primary" id="image" name="image" accept="image/*" required>
+      </div>
+      <button type="submit" class="btn btn-primary w-100">Nahrát obrázek</button>
+    </form>
+  </div>
 </div>
 {% endblock %}

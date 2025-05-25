@@ -1,14 +1,13 @@
 {% set this_page = "logs" %}
 {% extends "static/layout.html.j2" %}
 
-{% block title %}Mesh Messages{% endblock %}
+{% block title %}Zprávy ze sítě{% endblock %}
 
 {% block content %}
 <div class="container pt-3">
-  <h5>Mesh Messages</h5>
+  <h5>Zprávy z mesh sítě</h5>
   <p class="mb-2">
-    All messages from the mesh. Only the messages received
-    since this server was last restarted are shown.
+    Všechny zprávy z mesh sítě. Zobrazeny pouze zprávy od posledního restartu serveru.
   </p>
 
   <table class="table table-striped table-bordered">

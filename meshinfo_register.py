@@ -53,13 +53,13 @@ VALUES (%s, %s, %s, %s)"""
         email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         username_regex = r'^\w+$'
         if not email or not re.match(email_regex, email):
-            return {"error": "Invalid email."}
+            return {"error": "Neplatný email."}
         elif not password or len(password) < 6:
-            return {"error": "Invalid password."}
+            return {"error": "Neplatné heslo."}
         elif not username or not re.match(username_regex, username):
-            return {"error": "Invalid username."}
+            return {"error": "Neplatné uživatelské jméno."}
         elif not self.verify(username, password):
-            return {"error": "Username or email already exist."}
+            return {"error": "Uživatel nebo Email již existuje."}
         code = utils.generate_random_code(4)
         self.add_user(
            username,
@@ -70,10 +70,10 @@ VALUES (%s, %s, %s, %s)"""
         base_url = self.config["mesh"]["url"]
         utils.send_email(
             email,
-            "MeshInfo Verify Account",
-            f"Please visit {base_url}/verify?c={code} to verify your account."
+            "MeshInfo - Ověření Účtu",
+            f"Navštivte {base_url}/verify?c={code} pro ověření vašeho účtu."
         )
-        return {"success": "Please check your email to verify your account."}
+        return {"success": "Prosím zkontrolujte vaši schránku k ověření účtu."}
     
     def update_password(self, email, newpass):
         hashed = utils.hash_password(newpass)
@@ -107,7 +107,7 @@ WHERE status='VERIFIED' AND email = %s"""
             )
             return {"success": encoded_jwt}
 
-        return {"error": "Login failed."}
+        return {"error": "Chyba přihlášení."}
 
     def auth(self, encoded_jwt):
         try:
@@ -134,9 +134,9 @@ WHERE verification=%s
         cur.close()
         self.db.commit()
         if verified:
-            return {"success": "Email verified. You can now log in."}
+            return {"success": "Email byl ověřen. Můžete se přihlásit."}
         else:
-            return {"error": "Expired or invalid link."}
+            return {"error": "Expirovaný nebo nesprávný odkaz"}
 
     def get_otp(self, email):
         otp = utils.generate_random_otp()

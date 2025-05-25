@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="cs">
 
 <head>
   <title>{% block title %}{% endblock %}</title>
@@ -7,6 +7,10 @@
   <meta charset="utf-8">
   <link rel="icon" type="image/x-icon" href="/images/icons/favicon.ico">
   <link href="/css/bootstrap.min.css" rel="stylesheet">
+  <script src="/js/jquery-3.7.1.min.js"></script>
+  <script src="/js/popper.min.js"></script>
+  <script src="/js/bootstrap.bundle.min.js"></script>
+  <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "951d46fd291c4d25886e44f3743177ad"}'></script>
   <style>
     body {
       font-family: monospace;
@@ -26,59 +30,133 @@
     .table-striped>tbody>tr:nth-child(2n+1)>th {
       background-color: #F9F9D7;
     }
+
+    .nav-item.active .nav-link {
+      text-decoration: underline;
+      text-underline-offset: 4px;
+      font-weight: bold;
+    }
+
+    .high-snr {
+      color: green;
+    }
+
+    .medium-snr {
+      color: orange;
+    }
+
+    .low-snr {
+      color: red;
+    }
   </style>
   {% block head %}{% endblock %}
 </head>
 
 <body>
-  <nav class="navbar navbar-expand-lg navbar-light">
+  {% set translations = {
+    "chat": "Chat pro PC",
+    "chat_mobile": "Chat pro Mobil",
+    "graph": "Graf",
+    "map": "Mapa",
+    "nodes": "Uzly",
+    "neighbors": "Sousedé",
+    "telemetry": "Telemetrie",
+    "traceroutes": "Trasy",
+    "logs": "MQTT"
+  } %}
+
+  <nav class="navbar navbar-expand-lg navbar-light" id="main-nav">
     <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarToggler"
-      aria-controls="navbarToggler" aria-expanded="false" aria-label="Toggle navigation">
+      aria-controls="navbarToggler" aria-expanded="false" aria-label="Přepnout navigaci">
       <span class="navbar-toggler-icon"></span>
     </button>
     <div class="collapse navbar-collapse" id="navbarToggler">
-      <a class="navbar-brand" href="{{  config["mesh"]["url"] }}">{{ config["mesh"]["name"] }}</a>
+      <a class="navbar-brand" href="{{ config["mesh"]["url"] }}">{{ config["mesh"]["name"] }}</a>
       <ul class="navbar-nav mr-auto mt-2 mt-lg-0">
-        {% for page in ["chat", "graph", "map", "nodes", "neighbors", "telemetry", "traceroutes", "logs"] %}
+        {% for page in ["chat", "chat_mobile", "graph", "map", "nodes", "neighbors", "telemetry", "traceroutes", "logs"] %}
         <li class="nav-item{% if page == this_page %} active{% endif %}">
-          <a class="nav-link" href="{{ page }}.html">{{ page.title() }}</a>
+          <a class="nav-link" href="{{ page }}.html">{{ translations[page] }}</a>
         </li>
         {% endfor %}
         {% if auth %}
         <li class="nav-item{% if this_page == "my nodes" %} active{% endif %}">
-          <a class="nav-link" href="{{ url_for("mynodes") }}">My Nodes</a>
+          <a class="nav-link" href="{{ url_for("mynodes") }}">Moje uzly</a>
         </li>
         {% endif %}
-         <li class="nav-item dropdown">
+        <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle" href="#" id="toolsDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-            Tools
+            Nástroje
           </a>
           <div class="dropdown-menu" aria-labelledby="toolsDropdown">
-            <a class="dropdown-item" href="https://meshview.zr1rf.za.net/">MeshView</a>
-            <a class="dropdown-item" href="https://meshtastic.liamcottle.net/?lat=-33.952188819072816&lng=378.6568450927735&zoom=11">Liam's Map</a>
-            <a class="dropdown-item" href="https://meshmap.net/">MeshMap</a>
+            <a class="dropdown-item" target="_blank" rel="noopener noreferrer" href="https://meshtastic.liamcottle.net/?lat=49.60096465765127&lng=377.2251892089844&zoom=10">Liamova Mapa</a>
+            <a class="dropdown-item" target="_blank" rel="noopener noreferrer" href="https://meshmap.net/">MeshMap</a>
+            <div class="dropdown-divider"></div>
+            <a class="dropdown-item" target="_blank" rel="noopener noreferrer" href="https://flasher.meshtastic.org/">Flasher</a>
+            <a class="dropdown-item" target="_blank" rel="noopener noreferrer" href="https://site.meshtastic.org/">Plánovač Sítě</a>
+            <div class="dropdown-divider"></div>
+            <a class="dropdown-item" target="_blank" rel="noopener noreferrer" href="https://meshtastic-designer.rakwireless.com/">Meshtastic Designer</a>
           </div>
         </li>
-        <li class="nav-item{% if this_page == "#MeshtasticMonday" %} active{% endif %}">
-          <a class="nav-link" href="monday.html">#MeshtasticMonday</a>
+        <li class="nav-item{% if this_page == "#MeshPondeli" %} active{% endif %}">
+          <a class="nav-link" href="monday.html">#MeshPondeli</a>
         </li>
       </ul>
       {% if not auth %}
-      <a href="{{ url_for("login") }}" class="btn btn-info" role="button">Login</a>
+      <a href="{{ url_for("login") }}" class="btn btn-info" role="button">Přihlásit se</a>
       {% else %}
-      <a href="{{ url_for("logout") }}" class="btn btn-info" role="button">Logout</a>
+      <a href="{{ url_for("logout") }}" class="btn btn-info" role="button">Odhlásit se</a>
       {% endif %}
     </div>
   </nav>
-  {% if success_message %}<div class="p-3 mt-1 fw-bold" style="background: #94D19B;">{{ success_message }}</div>{% endif %}
-  {% if error_message %}<div class="p-3 mt-1 fw-bold" style="background: #E57373;">{{ error_message }}</div>{% endif %}
+
+  {% if success_message %}
+  <div class="p-3 mt-1 fw-bold" style="background: #94D19B;">{{ success_message }}</div>
+  {% endif %}
+  {% if error_message %}
+  <div class="p-3 mt-1 fw-bold" style="background: #E57373;">{{ error_message }}</div>
+  {% endif %}
+
   <main>
     {% block content %}{% endblock %}
   </main>
-  <div class="text-center w-100 mt-5 mb-3" style="color: #505050">Visit <a href="https://github.com/dadecoza/meshinfo-lite">MeshInfo-Lite</a> on Github. Also visit the original <a href="https://github.com/MeshAddicts/meshinfo">MeshInfo</a> by Kevin Elliott.</div>
-  <script src="/js/jquery-3.7.1.min.js"></script>
-  <script src="/js/popper.min.js"></script>
-  <script src="/js/bootstrap.bundle.min.js"></script>
-</body>
 
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get('kiosk') === 'true') {
+      const nav = document.getElementById('main-nav');
+      if (nav) {
+        nav.style.display = 'none';
+      }
+
+      function disableLinks() {
+        document.querySelectorAll('a').forEach(function (link) {
+          link.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          });
+
+          link.style.pointerEvents = 'none';
+          link.style.color = '#000';
+          link.style.cursor = 'not-allowed'; 
+        });
+      }
+
+      disableLinks();
+
+      const observer = new MutationObserver(function (mutationsList, observer) {
+        mutationsList.forEach(function (mutation) {
+          if (mutation.type === 'childList') {
+            disableLinks();
+          }
+        });
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  });
+</script>
+</body>
 </html>

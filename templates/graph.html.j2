@@ -1,10 +1,10 @@
 {% set this_page = "graph" %}
 {% extends "layout.html.j2" %}
 
-{% block title %}Graph | MeshInfo{% endblock %}
+{% block title %}Graf Sítě | MeshInfo{% endblock %}
 {% block content %}
   <div class="container pt-3">
-  <h5>{{ this_page.title() }}</h5>
+  <h5>Graf Sítě</h5>
   </div>
   <div class="w-full h-full" id="container" style="height: 100vh;">
   </div>
@@ -23,28 +23,14 @@
     chart.tooltip().format(function() {
       if (this.type == "node") {
         return this.id + "<br>" + this.getData("name") +
-              "<br><br>Neigbors: " + this.siblings.length;
+              "<br><br>Sousedé: " + this.siblings.length;
       } else {
         return this.getData("from") + " -> " + this.getData("to");
       }
     });
     chart.draw();
     chart.fit();
-    chart.listen('click', function(e) {
-    var tag = e.domTarget.tag;
-    if (tag) {
-      if (tag.type === 'node') {
-        var url;
-        for (var i = 0; i < data.nodes.length; i++) {
-          if (data.nodes[i].id === tag.id) {
-            url = "node_" + data.nodes[i].id + ".html";
-            break;
-          }
-        }
-        window.open(url, '_self');
-      }
-    }
-  });
+
     {% endraw %}
   </script>
 {% endblock %}

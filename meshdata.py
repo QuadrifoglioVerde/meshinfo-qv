@@ -6,18 +6,19 @@ import time
 import utils
 import logging
 import re
+import meshtastic_support
 
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, bytes):
-            return obj.decode("utf-8")  # Convert bytes to string
+            return obj.decode("utf-8")
         elif isinstance(obj, datetime.datetime):
-            return obj.isoformat()  # Convert datetime to ISO format
+            return obj.isoformat()
         elif isinstance(obj, datetime.date):
-            return obj.isoformat()  # Convert date to string
+            return obj.isoformat()
         elif isinstance(obj, set):
-            return list(obj)  # Convert set to list
+            return list(obj)
         # Use default serialization for other types
         return super().default(obj)
 
@@ -70,6 +71,48 @@ class MeshData:
         cur = self.db.cursor()
         cur.execute("SET NAMES utf8mb4;")
 
+
+    def cleanup_nodes(self):
+        try:
+            sql = """
+            DELETE FROM nodeinfo
+            WHERE ts_seen < NOW() - INTERVAL 10 DAY
+            """
+            cur = self.db.cursor()
+            cur.execute(sql)
+            affected_rows = cur.rowcount
+            self.db.commit()
+            cur.close()
+            logging.info(f"Deleted {affected_rows} old nodes from nodeinfo.")
+        except Exception as e:
+            logging.error(f"Error cleaning up old nodes: {e}")
+
+
+    def get_node_activity(self):
+        activity = {}
+        try:
+            sql = """SELECT 
+                        JSON_EXTRACT(message, '$.from') AS node_id,
+                        JSON_EXTRACT(message, '$.to') AS to_id,
+                        MAX(JSON_EXTRACT(message, '$.rx_time')) AS last_activity
+                     FROM meshlog
+                     WHERE ts_created >= NOW() - INTERVAL 15 SECOND
+                     GROUP BY node_id, to_id;"""
+            cur = self.db.cursor()
+            cur.execute(sql)
+            rows = cur.fetchall()
+            for row in rows:
+                node_id, to_id, last_activity = row
+                if node_id and last_activity:
+                    activity[utils.convert_node_id_from_int_to_hex(int(node_id))] = {
+                        "to": utils.convert_node_id_from_int_to_hex(int(to_id)) if to_id else None,
+                        "last_activity": int(last_activity)
+                    }
+            cur.close()
+        except Exception as e:
+            logging.error(f"Error fetching node activity from meshlog: {e}")
+        return activity
+
     def get_telemetry(self, id):
         telemetry = {}
         sql = """SELECT * FROM telemetry WHERE id = %s
@@ -92,7 +135,8 @@ ORDER BY telemetry_time DESC LIMIT 1"""
     def get_telemetry_all(self):
         telemetry = []
         sql = """SELECT * FROM telemetry
-ORDER BY ts_created DESC LIMIT 1000"""
+WHERE battery_level IS NOT NULL OR temperature IS NOT NULL
+ORDER BY ts_created DESC LIMIT 500"""
         cur = self.db.cursor()
         cur.execute(sql)
         rows = cur.fetchall()
@@ -113,6 +157,28 @@ ORDER BY ts_created DESC LIMIT 1000"""
         sql = """SELECT * FROM telemetry
 WHERE ts_created >= NOW() - INTERVAL 1 DAY
 AND id = %s AND battery_level IS NOT NULL
+ORDER BY ts_created"""
+        params = (node_id, )
+        cur = self.db.cursor()
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        for row in rows:
+            record = {}
+            column_names = [desc[0] for desc in cur.description]
+            for i in range(0, len(row)):
+                if isinstance(row[i], datetime.datetime):
+                    record[column_names[i]] = row[i].timestamp()
+                else:
+                    record[column_names[i]] = row[i]
+            telemetry.append(record)
+        cur.close()
+        return telemetry
+
+    def get_node_env_telemetry(self, node_id):
+        telemetry = []
+        sql = """SELECT * FROM telemetry
+WHERE ts_created >= NOW() - INTERVAL 1 DAY
+AND id = %s AND temperature IS NOT NULL
 ORDER BY ts_created"""
         params = (node_id, )
         cur = self.db.cursor()
@@ -156,11 +222,13 @@ ORDER BY ts_created"""
     p1.latitude_i lat1_i,
     p1.longitude_i lon1_i,
     p2.latitude_i lat2_i,
-    p2.longitude_i lon2_i
+    p2.longitude_i lon2_i,
+    a.ts_created
 FROM neighborinfo a
 LEFT OUTER JOIN position p1 ON p1.id = a.id
 LEFT OUTER JOIN position p2 ON p2.id = a.neighbor_id
 WHERE a.id = %s
+AND a.ts_created > (NOW() - INTERVAL 3 DAY)
 """
         params = (id, )
         cur = self.db.cursor()
@@ -196,8 +264,18 @@ WHERE a.id = %s
 
     def get_traceroutes(self):
         tracerouts = []
-        sql = """SELECT from_id, to_id, route, snr, ts_created
-FROM traceroute ORDER BY ts_created DESC"""
+        sql = """SELECT from_id, to_id, route, snr, 
+    FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(ts_created) / 3) * 3) AS ts_grouped
+FROM traceroute
+WHERE snr IS NOT NULL
+GROUP BY 
+    from_id, 
+    to_id, 
+    route, 
+    snr, 
+    ts_grouped
+ORDER BY ts_grouped DESC
+LIMIT 100"""
         cur = self.db.cursor()
         cur.execute(sql)
         rows = cur.fetchall()
@@ -216,26 +294,55 @@ FROM traceroute ORDER BY ts_created DESC"""
         cur.close()
         return tracerouts
 
-    def get_nodes(self, active=False):
+    def get_nodes(self, active=False, with_neighbors=True, with_position=True):
         nodes = {}
-        active_threshold = int(
-            self.config["server"]["node_activity_prune_threshold"]
-        )
-        all_sql = """SELECT n.*, u.username owner_username
-FROM nodeinfo n LEFT OUTER JOIN meshuser u ON n.owner = u.email"""
-        active_sql = """
-SELECT n.*, u.username owner_username FROM
-nodeinfo n LEFT OUTER JOIN meshuser u ON n.owner = u.email
-WHERE n.ts_seen > FROM_UNIXTIME(%s)"""
+        active_threshold = int(self.config["server"]["node_activity_prune_threshold"])
+        base_sql = """
+SELECT 
+    n.*, 
+    u.username AS owner_username,
+    IF(
+        t.id IS NOT NULL,
+        JSON_OBJECT(
+            'id', t.id,
+            'air_util_tx', t.air_util_tx,
+            'battery_level', t.battery_level,
+            'channel_utilization', t.channel_utilization,
+            'uptime_seconds', t.uptime_seconds,
+            'voltage', t.voltage,
+            'temperature', t.temperature,
+            'telemetry_time', UNIX_TIMESTAMP(t.telemetry_time),
+            'ts_created', UNIX_TIMESTAMP(t.ts_created)
+        ),
+        JSON_OBJECT()
+    ) AS telemetry
+FROM nodeinfo n
+LEFT JOIN meshuser u ON n.owner = u.email
+LEFT JOIN (
+    SELECT t1.*
+    FROM telemetry t1
+    JOIN (
+        SELECT id, MAX(telemetry_time) AS max_time
+        FROM telemetry
+        WHERE battery_level IS NOT NULL
+        GROUP BY id
+    ) t2 ON t1.id = t2.id AND t1.telemetry_time = t2.max_time
+) t ON n.id = t.id
+WHERE n.id <> 4294967295
+"""
+        if active:
+            base_sql += " AND n.ts_seen > FROM_UNIXTIME(%s)"
+
         cur = self.db.cursor()
-        if not active:
-            cur.execute(all_sql)
-        else:
+        if active:
             timeout = time.time() - active_threshold
-            params = (timeout, )
-            cur.execute(active_sql, params)
+            cur.execute(base_sql, (timeout,))
+        else:
+            cur.execute(base_sql)
+
         rows = cur.fetchall()
         column_names = [desc[0] for desc in cur.description]
+        node_ids = []
         for row in rows:
             record = {}
             for i in range(len(row)):
@@ -244,50 +351,54 @@ WHERE n.ts_seen > FROM_UNIXTIME(%s)"""
                 else:
                     record[column_names[i]] = row[i]
             is_active = record["ts_seen"] > (time.time() - active_threshold)
-            record["telemetry"] = self.get_telemetry(row[0])
-            record["neighbors"] = self.get_neighbors(row[0])
-            record["position"] = self.get_position(row[0])
-            if record["position"]:
-                if record["position"]["latitude_i"]:
-                    record["position"]["latitude"] = \
-                        record["position"]["latitude_i"] / 10000000
-                else:
-                    record["position"]["latitude"] = None
-                if record["position"]["longitude_i"]:
-                    record["position"]["longitude"] = \
-                        record["position"]["longitude_i"] / 10000000
-                else:
-                    record["position"]["longitude"] = None
+            record["telemetry"] = json.loads(record["telemetry"]) if record["telemetry"] else {}
             record["role"] = record["role"] or 0
             record["active"] = is_active
             record["last_seen"] = utils.time_since(record["ts_seen"])
             node_id = utils.convert_node_id_from_int_to_hex(row[0])
             nodes[node_id] = record
+            node_ids.append(row[0])
         cur.close()
+
+        # Hromadné načtení neighbors a position
+        if with_neighbors:
+            neighbors_map = {nid: self.get_neighbors(nid) for nid in node_ids}
+            for idx, nid in enumerate(node_ids):
+                nodes[utils.convert_node_id_from_int_to_hex(nid)]["neighbors"] = neighbors_map[nid]
+        if with_position:
+            positions_map = {nid: self.get_position(nid) for nid in node_ids}
+            for idx, nid in enumerate(node_ids):
+                pos = positions_map[nid]
+                node = nodes[utils.convert_node_id_from_int_to_hex(nid)]
+                node["position"] = pos
+                if pos:
+                    node["position"]["latitude"] = pos["latitude_i"] / 10000000 if pos.get("latitude_i") else None
+                    node["position"]["longitude"] = pos["longitude_i"] / 10000000 if pos.get("longitude_i") else None
+
         return nodes
 
     def get_chat(self):
-        chats = []
-        sql = "SELECT DISTINCT * FROM text ORDER BY ts_created DESC"
+        sql = """SELECT from_id, to_id, channel, text, MIN(ts_created) AS ts_created
+FROM text
+WHERE to_id = 4294967295
+GROUP BY from_id, to_id, channel, text
+ORDER BY ts_created DESC
+LIMIT 100;"""
         cur = self.db.cursor()
         cur.execute(sql)
         rows = cur.fetchall()
         column_names = [desc[0] for desc in cur.description]
         prev_key = ""
+        chats = []
         for row in rows:
-            record = {}
-            for i in range(len(row)):
-                col = column_names[i]
-                if isinstance(row[i], datetime.datetime):
-                    record[col] = row[i].timestamp()
-                else:
-                    record[col] = row[i]
+            record = {column_names[i]: (row[i].timestamp() if isinstance(row[i], datetime.datetime) else row[i]) for i in range(len(row))}
             record["from"] = self.hex_id(record["from_id"])
             record["to"] = self.hex_id(record["to_id"])
             msg_key = record["from"] + record["to"] + record["text"]
             if msg_key != prev_key:
-                chats.append(record)
+                chats.append(record.copy())
                 prev_key = msg_key
+        cur.close()
         return chats
 
     def get_route_coordinates(self, id):
@@ -309,7 +420,7 @@ ORDER BY ts_created DESC"""
 
     def get_logs(self):
         logs = []
-        sql = "SELECT * FROM meshlog ORDER BY ts_created DESC"
+        sql = "SELECT * FROM meshlog ORDER BY ts_created DESC limit 100"
         cur = self.db.cursor()
         cur.execute(sql)
         rows = cur.fetchall()
@@ -475,12 +586,17 @@ WHERE id = %s
             "hw_model",
             "long_name",
             "short_name",
+            "macaddr",
+            "public_key",
             "role",
             "firmware_version"
         ]
         for attr in expected:
             if attr not in payload:
                 payload[attr] = None
+        # Ensure role is set to 0 if missing or None
+        if payload["role"] is None:
+            payload["role"] = 0
 
         sql = """INSERT INTO nodeinfo (
     id,
@@ -488,15 +604,19 @@ WHERE id = %s
     short_name,
     hw_model,
     role,
+    macaddr,
+    public_key,
     firmware_version,
     ts_updated
 )
-VALUES (%s, %s, %s, %s, %s, %s, NOW())
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
 ON DUPLICATE KEY UPDATE
 long_name = VALUES(long_name),
 short_name = VALUES(short_name),
 hw_model = COALESCE(VALUES(hw_model), hw_model),
 role = COALESCE(VALUES(role), role),
+macaddr = COALESCE(VALUES(macaddr), macaddr),
+public_key = COALESCE(VALUES(public_key), public_key),
 firmware_version = COALESCE(VALUES(firmware_version), firmware_version),
 ts_updated = VALUES(ts_updated)"""
         values = (
@@ -505,6 +625,8 @@ ts_updated = VALUES(ts_updated)"""
             payload["short_name"],
             payload["hw_model"],
             payload["role"],
+            payload["macaddr"],
+            payload["public_key"],
             payload["firmware_version"]
         )
         cur = self.db.cursor()
@@ -523,6 +645,7 @@ ts_updated = VALUES(ts_updated)"""
             "precision_bits",
             "time"
         ]
+
         if "position_precision" in payload:
             payload["precision_bits"] = payload["position_precision"]
         for attr in expected:
@@ -578,6 +701,10 @@ ts_updated = VALUES(ts_updated)"""
         )
         self.db.commit()
 
+        # --- Zápis hop_start do nodeinfo, pokud je v datech ---
+        if "hop_start" in data:
+            self.update_hop_start(data["from"], data["hop_start"])
+
     def store_mapreport(self, data):
         self.store_node(data)
         self.store_position(data, "mapreport")
@@ -623,6 +750,15 @@ ts_updated = VALUES(ts_updated)"""
         self.db.cursor().execute(sql, params)
         self.db.commit()
 
+    def update_hop_start(self, node_id, hop_start):
+        """Aktualizuje hodnotu hop_start v tabulce nodeinfo pro daný node_id."""
+        sql = "UPDATE nodeinfo SET hop_start = %s, ts_updated = NOW() WHERE id = %s"
+        params = (hop_start, node_id)
+        cur = self.db.cursor()
+        cur.execute(sql, params)
+        cur.close()
+        self.db.commit()
+
     def store_telemetry(self, data):
         cur = self.db.cursor()
         cur.execute(f"SELECT COUNT(*) FROM telemetry")
@@ -636,7 +772,7 @@ ORDER BY ts_created ASC LIMIT 1""")
         node_id = self.verify_node(data["from"])
         payload = dict(data["decoded"]["json_payload"])
 
-        data = {
+        data_metrics = {
             "air_util_tx": None,
             "battery_level": None,
             "channel_utilization": None,
@@ -656,9 +792,9 @@ ORDER BY ts_created ASC LIMIT 1""")
         for metric in metrics:
             if metric not in payload:
                 continue
-            for key in data:
+            for key in data_metrics:
                 if key in payload[metric]:
-                    data[key] = payload[metric][key]
+                    data_metrics[key] = payload[metric][key]
 
         sql = """INSERT INTO telemetry
 (id, air_util_tx, battery_level, channel_utilization,
@@ -668,24 +804,28 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FROM_UNIXTIME(%s))
 """
         params = (
             node_id,
-            data["air_util_tx"],
-            data["battery_level"],
-            data["channel_utilization"],
-            data["uptime_seconds"],
-            data["voltage"],
-            data["temperature"],
-            data["relative_humidity"],
-            data["barometric_pressure"],
-            data["gas_resistance"],
-            data["current"],
+            data_metrics["air_util_tx"],
+            data_metrics["battery_level"],
+            data_metrics["channel_utilization"],
+            data_metrics["uptime_seconds"],
+            data_metrics["voltage"],
+            data_metrics["temperature"],
+            data_metrics["relative_humidity"],
+            data_metrics["barometric_pressure"],
+            data_metrics["gas_resistance"],
+            data_metrics["current"],
             payload["time"]
         )
         self.db.cursor().execute(sql, params)
         self.db.commit()
 
+        # --- Zápis hop_start do nodeinfo, pokud je v datech ---
+        if "hop_start" in data:
+            self.update_hop_start(node_id, data["hop_start"])
+
     def store_text(self, data):
         from_id = self.verify_node(data["from"])
-        to_id = self.verify_node(data["to"])
+        to_id = self.verify_node(data["to"],noupdate=True)
         payload = dict(data["decoded"]["json_payload"])
         sql = """INSERT INTO text
 (from_id, to_id, text, channel, ts_created)
@@ -738,7 +878,7 @@ SET owner = %s WHERE id = %s"""
         cur.close()
         self.db.commit()
 
-    def verify_node(self, id, via=None):
+    def verify_node(self, id, via=None, noupdate=False):
         query = "SELECT 1 FROM nodeinfo where id = %s"
         param = (id, )
         cur = self.db.cursor()
@@ -748,6 +888,8 @@ SET owner = %s WHERE id = %s"""
         if not found:
             self.store_node(self.unknown(id))
         else:
+            if noupdate:
+                return id
             if via:
                 sql = """UPDATE nodeinfo SET
 ts_seen = NOW(), updated_via = %s WHERE id = %s"""
@@ -764,7 +906,7 @@ ts_seen = NOW(), updated_via = %s WHERE id = %s"""
         cur = self.db.cursor()
         cur.execute(f"SELECT COUNT(*) FROM meshlog")
         count = cur.fetchone()[0]
-        if count >= 1000:
+        if count >= 2000:
             cur.execute(f"DELETE FROM meshlog ORDER BY ts_created ASC LIMIT 1")
         self.db.commit()
 
@@ -1024,6 +1166,50 @@ VALUES (%s, %s, %s, %s, FROM_UNIXTIME(%s))
             except Exception as e:
                 print(f"failed to write record.")
         self.db.commit()
+
+    def get_data_for_qr(self, node_id):
+        sql = "SELECT long_name, short_name, macaddr, public_key, hw_model, role FROM nodeinfo WHERE id = %s"
+        params = (node_id, )
+        cur = self.db.cursor()
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        cur.close()
+        if row:
+            macaddr = row[2] if row[2] is not None else b""
+            public_key = row[3] if row[3] is not None else b""
+            hw_model = row[4] if row[4] is not None else 0
+            role = row[5] if row[5] is not None else 0
+            debug_data = {
+                "id": node_id,
+                "hex_id": utils.convert_node_id_from_int_to_hex(int(node_id)),
+                "long_name": row[0] or "",
+                "short_name": row[1] or "",
+                "macaddr": macaddr,
+                "public_key": public_key,
+                "hw_model": meshtastic_support.HardwareModel(hw_model).name,
+                "role": MeshData.role_number_to_string(role)
+            }
+            #import sys, pprint
+            #print("get_data_for_qr:", pprint.pformat(debug_data), file=sys.stderr)
+            return debug_data
+        return None
+
+    def role_number_to_string(role_num):
+        role_map = {
+            0: "CLIENT",
+            1: "CLIENT_MUTE",
+            2: "ROUTER",
+            3: "ROUTER_CLIENT",
+            4: "REPEATER",
+            5: "TRACKER",
+            6: "SENSOR",
+            7: "TAK",
+            8: "CLIENT_HIDDEN",
+            9: "LOST_AND_FOUND",
+            10: "TAK_TRACKER",
+            11: "ROUTER_LATE"
+        }
+        return role_map.get(int(role_num), "Unknown")
 
 
 def create_database():

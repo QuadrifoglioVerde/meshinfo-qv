@@ -1,25 +1,28 @@
 {% set this_page = "traceroutes" %}
 {% extends "layout.html.j2" %}
 
-{% block title %}Traceroutes | MeshInfo{% endblock %}
+{% block title %}Trasy | MeshInfo{% endblock %}
 
 {% block content %}
   <div class="container pt-3">
-  <h5>{{ this_page.title() }}</h5>
+  <h5>Trasy</h5>
+  <p class="mb-2">
+    Posledních 100 trasování.
+  </p>
   <table class="table table-striped table-bordered table-sm">
     <thead>
       <tr>
-        <th scope="col">Timestamp</th>
-        <th scope="col">From</th>
-        <th scope="col">To</th>
-        <th scope="col">Route</th>
-        <th scope="col">Route Hops</th>
+        <th scope="col">Čas</th>
+        <th scope="col">Odkud</th>
+        <th scope="col">Kam</th>
+        <th scope="col">Trasa</th>
+        <th scope="col">Skoků</th>
       </tr>
     </thead>
     <tbody>
       {% for item in traceroutes %}
         <tr>
-          <td>{{ datetime.fromtimestamp(item.ts_created).strftime("%Y-%m-%d %H:%M:%S") }}</td>
+          <td>{{ datetime.fromtimestamp(item.ts_created).strftime("%d.%m.%Y %H:%M:%S") }}</td>
           <td>
             {% set fnodeid = utils.convert_node_id_from_int_to_hex(item["from_id"]) %}
             {% set tnodeid = utils.convert_node_id_from_int_to_hex(item["to_id"]) %}
@@ -27,7 +30,7 @@
             {% if fnode %}
               <a href="node_{{ fnodeid }}.html">{{ fnode.short_name }}</a>
             {% else %}
-              <span>UNK</span>
+              <span>???</span>
             {% endif %}
           </td>
           <td>
@@ -35,23 +38,42 @@
             {% if tnode %}
               <a href="node_{{ tnodeid }}.html">{{ tnode.short_name }}</a>
             {% else %}
-              <span>UNK</span>
+              <span>???</span>
             {% endif %}
           </td>
           <td>
-            {% for hop in item.route %}
-              {% set hnodeid = utils.convert_node_id_from_int_to_hex(hop) %}
-              {% set hnode = nodes[hnodeid] %}
-              {% if hnode %}
-                <a href="node_{{ hnodeid }}.html">{{ hnode.short_name }}</a>
+          {% for hop in item.route %}
+            {% set hnodeid = utils.convert_node_id_from_int_to_hex(hop) %}
+            {% set hnode = nodes[hnodeid] %}
+            {% set snr_value = item.snr[loop.index0] if loop.index0 < item.snr | length else None %}
+            {% if snr_value is not none %}
+              {% if snr_value == -32 %}
+                <span>(?)</span>
               {% else %}
-                <span>UNK</span>
+                <span>({{ snr_value }})</span>
               {% endif %}
-              {% if not loop.last %}
-                <span>></span>
+              <span> > </span>
+            {% endif %}
+            {% if hnode %}
+              <a href="node_{{ hnodeid }}.html">{{ hnode.short_name }}</a>
+            {% else %}
+              <span>???</span>
+            {% endif %}
+            {% if not loop.last %}
+              <span> > </span>
+            {% endif %}
+          {% endfor %}
+          {% if item.route | length < item.snr | length %}
+            {% set last_snr = item.snr[item.route | length] if item.route | length < item.snr | length else None %}
+            {% if last_snr is not none %}
+              {% if last_snr == -32 %}
+                <span> > (?)</span>
+              {% else %}
+                <span> > ({{ last_snr }})</span>
               {% endif %}
-            {% endfor %}
-          </td>
+            {% endif %}
+          {% endif %}
+        </td>
           <td>{{ item.route | length }}</td>
         </tr>
       {% endfor %}

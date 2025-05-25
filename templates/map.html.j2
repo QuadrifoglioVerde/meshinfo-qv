@@ -1,10 +1,10 @@
 {% set this_page = "map" %}
 {% extends "layout.html.j2" %}
 
-{% block title %}Map | MeshInfo{% endblock %}
+{% block title %}Mapa | MeshInfo{% endblock %}
 {% block head %}
-  <script src="https://cdn.jsdelivr.net/npm/openlayers@4.6.5/dist/ol.min.js"></script>
-  <link href="https://cdn.jsdelivr.net/npm/openlayers@4.6.5/dist/ol.min.css" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/openlayers/10.3.1/dist/ol.min.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/openlayers/10.3.1/ol.min.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
@@ -13,28 +13,197 @@
     <a href="#" id="popup-closer" class="ol-popup-closer"></a>
     <div id="popup-content"></div>
   </div>
-  <div id="details" class="p-2" style="background-color: white;">
+  <div id="details" class="p-2" style="background-color: white; min-width: 250px;">
     <div>
       <div id="details-title"></div>
-      <div id="details-subtitle"></div>
     </div>
     <div id="details-content">
     </div>
   </div>
+  <style>
+    #map {
+      height: calc(100vh - 56px);
+      width: 100vw;
+    }
+    body, html {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    .table-sm td, .table-sm th {
+      padding: 1px 4px !important;
+    }
+  </style>
   <div id="legend" class="p-2" style="background-color: #ffffff;">
-    <div>LEGEND</div>
+    <div>LEGENDA</div>
     <div>
-      <div style="background-color: #66FF66; height: 4px; width: 25px; display: inline-flex;"></div> Heard A Neighbor
-      <div</div>
+      <div style="background-color: #666666; height: 4px; width: 25px; display: inline-flex;"></div> Slyší Souseda
     </div>
     <div>
-      <div style="background-color: #6666FF; height: 4px; width: 25px; display: inline-flex;"></div> Heard By Neighbor
+      <div style="background-color: #6666FF; height: 4px; width: 25px; display: inline-flex;"></div> Slyšen Sousedem
     </div>
     <div>
-      <div style="background-color: #FF66FF; height: 4px; width: 25px; display: inline-flex;"></div> Both Heard Each Other
+      <div style="background-color: #ffb533; height: 4px; width: 25px; display: inline-flex;"></div> Slyší se navzájem
     </div>
   </div>
+  <div id="tools" class="p-2" style="background-color: #ffffff;">
+    <div>NÁSTROJE</div>
+    <button id="terrain-btn" style="margin-top:5px;width:100%">Kresli Terén</button>
+    <button id="highest-btn" style="margin-top:5px;width:100%">Nejvyšší Bod</button>
+  </div>
   <script type="module">
+    // =========================
+    // GEODETICKÉ FUNKCE A MAPOVÉ PROMĚNNÉ
+    // =========================
+    // Funkce pro výpočet polygonu kruhu na zemském povrchu (geodeticky)
+    function geodeticCirclePolygon(centerLon, centerLat, radiusMeters, points=80) {
+        const coords = [];
+        const R = 6371000;
+        const latRad = centerLat * Math.PI / 180;
+        const lonRad = centerLon * Math.PI / 180;
+        for (let i = 0; i <= points; i++) {
+            const angle = 2 * Math.PI * i / points;
+            const dx = radiusMeters * Math.cos(angle);
+            const dy = radiusMeters * Math.sin(angle);
+            const dLat = dy / R;
+            const dLon = dx / (R * Math.cos(latRad));
+            const lat = latRad + dLat;
+            const lon = lonRad + dLon;
+            coords.push(ol.proj.fromLonLat([lon * 180 / Math.PI, lat * 180 / Math.PI]));
+        }
+        return coords;
+    }
+
+    // =========================
+    // MAPOVÉ STYLY A ROLE
+    // =========================
+    const nodeMarkers = {};
+    
+    const precisionToRadius = {
+      10: 23300,
+      11: 11700,
+      12: 5800,
+      13: 2900,
+      14: 1500,
+      15: 729,
+      16: 364,
+      17: 182,
+      18: 91,
+      19: 45
+    };
+
+    const nodeRole = {
+      0: 'Client',
+      1: 'Client Mute',
+      2: 'Router',
+      3: 'Router Client',
+      4: 'Repeater',
+      5: 'Tracker',
+      6: 'Sensor',
+      7: 'ATAK',
+      8: 'Client Hidden',
+      9: 'Lost and Found',
+      10: 'ATAK Tracker',
+      11: 'Router Late'
+    };
+
+    // =========================
+    // FUNKCE PRO AKTIVITU UZLŮ
+    // =========================
+    async function fetchNodeActivity() {
+      try {
+        const response = await fetch('/api/node_activity');
+        const data = await response.json();
+
+        for (const [nodeId, nodeData] of Object.entries(data)) {
+          const { to, last_activity } = nodeData;
+          const node = nodes[nodeId];
+          if (node) {
+            console.log(`Aktivita uzlu ${nodeId} --> ${to}`);
+            const marker = features.find(feature => feature.get('node').id === nodeId);
+            if (marker) {
+
+              if (to !== "ffffffff") {
+                const targetNode = nodes[to];
+                if (targetNode && targetNode.position) {
+                  const sourcePosition = ol.proj.fromLonLat(node.position);
+                  const targetPosition = ol.proj.fromLonLat(targetNode.position);
+
+                  const lineFeature = new ol.Feature({
+                    geometry: new ol.geom.LineString([sourcePosition, targetPosition]),
+                  });
+
+                  const lineStyle = new ol.style.Style({
+                    stroke: new ol.style.Stroke({
+                      color: 'rgba(255, 0, 0, 0.6)',
+                      width: 2,
+                    }),
+                    zIndex: 0,
+                  });
+
+                  lineFeature.setStyle(lineStyle);
+
+                  const lineLayer = new ol.layer.Vector({
+                    source: new ol.source.Vector({
+                      features: [lineFeature],
+                    }),
+                  });
+
+                  map.addLayer(lineLayer);
+
+                  setTimeout(() => {
+                    map.removeLayer(lineLayer);
+                  }, 1500);
+                }
+              }
+
+              const originalStyle = marker.getStyle();
+              const textStyle = originalStyle.find(style => style.getText());
+
+              const blinkStyle = new ol.style.Style({
+                    image: node.role == 2 || node.role == 3 || node.role == 11
+                       ? new ol.style.RegularShape({
+                          points: 3,
+                          radius: 8,
+                          fill: new ol.style.Fill({ color: 'yellow' }),
+                          stroke: new ol.style.Stroke({ color: 'gray', width: 1 }),
+                      })
+                      : new ol.style.Circle({
+                          radius: 6,
+                          fill: new ol.style.Fill({ color: 'yellow' }),
+                          stroke: new ol.style.Stroke({ color: 'gray', width: 1 }),
+                      }),
+              });
+
+              marker.setStyle([blinkStyle, textStyle]);
+
+              setTimeout(() => marker.setStyle(originalStyle), 2000);
+            }
+          } else {
+            console.log(`Uzel ${nodeId} nebyl na aktivní mapě nalezen.`);
+          }
+        }
+      } catch (error) {
+        console.error('Chyba při získávání aktivity uzlů:', error);
+      }
+    }
+    
+    // =========================
+    // POMOCNÉ FUNKCE
+    // =========================
+    function getPrecisionRadius(precision) {
+      if (precisionToRadius.hasOwnProperty(precision)) {
+        const radius = precisionToRadius[precision];
+        if (radius >= 1000) {
+          return (radius / 1000).toFixed(1) + ' km';
+        } else {
+          return radius + ' m';
+        }
+      } else {
+        return 'Přesná';
+      }
+    }
+  
     async function reverseGeocode(lon, lat) {
       return fetch('https://nominatim.openstreetmap.org/reverse?format=json&lon=' + lon + '&lat=' + lat)
         .then(function(response) {
@@ -45,222 +214,140 @@
         });
     }
 
-    const default_position = {
-      latitude: 38.5816,
-      longitude: -121.4944,
-    };
-    var server_position = null;
-    {% if 'latitude' in config['mesh'] and 'longitude'in config['mesh'] %}
-      server_position = {
-        latitude: {{ config['mesh']['latitude'] }},
-        longitude: {{ config['mesh']['longitude'] }}
-      };
-    {% else %}
-      server_position = default_position;
-    {% endif %}
-
-    var server_zoom = null;
-    {% if 'zoom' in config['mesh'] %}
-      server_zoom = {{ config['mesh']['zoom'] }};
-    {% else %}
-      server_zoom = 9.5;
-    {% endif %}
-
-    const map = new ol.Map({
-      layers: [
-        new ol.layer.Tile({
-          source: new ol.source.OSM(),
-        }),
-      ],
-      target: 'map',
-      view: new ol.View({
-        center: ol.proj.fromLonLat([server_position.longitude, server_position.latitude]),
-        zoom: server_zoom,
-      }),
-    });
-
-    var defaultStyle = new ol.style.Style({
-      image: new ol.style.Circle({
-        radius: 6,
-        fill: new ol.style.Fill({
-          color: 'rgba(0, 0, 240, 1)'
-        }),
-        stroke: new ol.style.Stroke({
-          color: 'white',
-          width: 2
-        })
-      }),
-      zIndex: 0
-    });
-
-    var offlineStyle = new ol.style.Style({
-      image: new ol.style.Circle({
-        radius: 6,
-        fill: new ol.style.Fill({
-          color: 'rgba(0, 0, 0, 0.50)'
-        }),
-        stroke: new ol.style.Stroke({
-          color: 'white',
-          width: 2
-        })
-      }),
-      zIndex: 1
-    });
-
-    var onlineStyle = new ol.style.Style({
-      image: new ol.style.Circle({
-        radius: 6,
-        fill: new ol.style.Fill({
-          color: 'rgba(50, 240, 50, 1)'
-        }),
-        stroke: new ol.style.Stroke({
-          color: 'white',
-          width: 2
-        })
-      }),
-      zIndex: 2
-    });
-
-    const nodes = {};
-    var neighborLayers = [];
-    {% for id, node in nodes.items() %}
-      {% if node.position is defined and node.position and node.position.longitude_i and node.position.latitude_i %}
-      nodes['{{ id }}'] = {
-        id: '{{ id }}',
-        short_name: '{{ node.short_name }}',
-        long_name: '{{ node.long_name }}',
-        last_seen: '{{ node.last_seen }}',
-        position: [{{ node.position.longitude_i / 10000000 }}, {{ node.position.latitude_i / 10000000 }}],
-        online: {% if node.active %}true{% else %}false{% endif %}
-      };
-      {% if node.neighbors %}
-      nodes['{{ id }}'].neighbors = [
-        {% for neighbor in node.neighbors %}
-          {
-            id: '{{ utils.convert_node_id_from_int_to_hex(neighbor.neighbor_id) }}',
-            snr: '{{ neighbor.snr }}',
-            distance: '{{ neighbor.distance }}',
-          },
-        {% endfor %}
-      ];
-      {% else %}
-      nodes['{{ id }}'].neighbors = [];
-      {% endif %}
-      {% endif %}
-    {% endfor %}
-
-    const features = [];
-    // Add nodes to the map, loop through all nodes
-    // and add a feature for each node that has a position
-    Object.values(nodes).forEach(function(node) {
-      if (node.position) {
-        var feature = new ol.Feature({
-          geometry: new ol.geom.Point(ol.proj.fromLonLat(node.position)),
-          node: node,
-        });
-        if (node.online) {
-          feature.setStyle(onlineStyle);
-        } else {
-          feature.setStyle(offlineStyle);
-        }
-        features.push(feature);
-      }
-    });
-
-    const layer = new ol.layer.Vector({
-      style: defaultStyle,
-      source: new ol.source.Vector({
-        features: features
+    async function showNodeSelectionDialog(nodeList, callback, pixel) {
+      const dialog = document.createElement('div');
+      dialog.style.position = 'absolute';
+      dialog.style.backgroundColor = '#ffffff';
+      dialog.style.border = '1px solid #ccc';
+      dialog.style.borderRadius = '8px';
+      dialog.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.2)';
+      dialog.style.padding = '10px';
+      dialog.style.zIndex = 1000;
+      dialog.style.minWidth = '140px';
+      dialog.style.top = `${pixel[1]}px`;
+      dialog.style.left = `${pixel[0]}px`;
+    
+      const title = document.createElement('div');
+      title.innerText = 'Vyberte uzel:';
+      title.style.fontSize = '14px';
+      title.style.fontWeight = 'bold';
+      title.style.marginBottom = '10px';
+      dialog.appendChild(title);
+    
+      nodeList.forEach((node) => {
+        const button = document.createElement('button');
+        button.innerText = node.short_name;
+        button.style.display = 'block';
+        button.style.width = '100%';
+        button.style.marginTop = '5px';
+        button.style.padding = '5px';
+        button.style.border = 'none';
+        button.style.borderRadius = '4px';
+        button.style.backgroundColor = '#007bff';
+        button.style.color = '#ffffff';
+        button.style.cursor = 'pointer';
+        button.style.fontSize = '12px';
+        button.style.textAlign = 'center';
+        button.style.transition = 'background-color 0.3s';
+    
+        button.onmouseover = function () {
+          button.style.backgroundColor = '#0056b3';
+        };
+        button.onmouseout = function () {
+          button.style.backgroundColor = '#007bff';
+        };
+    
+        button.onclick = function () {
+          document.body.removeChild(dialog);
+          callback(node);
+        };
+        dialog.appendChild(button);
       })
-    });
-    map.addLayer(layer);
+    
+      const closeButton = document.createElement('button');
+      closeButton.innerText = 'Zavřít';
+      closeButton.style.display = 'block';
+      closeButton.style.width = '100%';
+      closeButton.style.marginTop = '8px';
+      closeButton.style.padding = '5px';
+      closeButton.style.border = 'none';
+      closeButton.style.borderRadius = '4px';
+      closeButton.style.backgroundColor = '#dc3545';
+      closeButton.style.color = '#ffffff';
+      closeButton.style.cursor = 'pointer';
+      closeButton.style.fontSize = '12px';
+      closeButton.style.textAlign = 'center';
+      closeButton.style.transition = 'background-color 0.3s';
+    
+      closeButton.onmouseover = function () {
+        closeButton.style.backgroundColor = '#a71d2a';
+      };
+      closeButton.onmouseout = function () {
+        closeButton.style.backgroundColor = '#dc3545';
+      };
+    
+      closeButton.onclick = function () {
+        document.body.removeChild(dialog);
+      };
+      dialog.appendChild(closeButton);
+    
+      document.body.appendChild(dialog);
+    }
 
-    var container = document.getElementById('nodeDetail');
-    var content = document.getElementById('popup-content');
-    var closer = document.getElementById('popup-closer');
-
-    var nodeDetails = document.getElementById('details');
-    var nodeTitle = document.getElementById('details-title');
-    var nodeSubtitle = document.getElementById('details-subtitle');
-    var nodeContent = document.getElementById('details-content');
-
-    var overlay = new ol.Overlay({
-      element: container,
-      autoPan: true,
-      autoPanAnimation: {
-          duration: 250
+    // =========================
+    // DETAIL UZLU A VYKRESLENÍ SOUSEDŮ
+    // =========================
+    async function handleSingleNode(node) {
+      let hopSquares = '';
+      const hopCount = Math.max(0, Math.min(7, node.hop_start || 0));
+      for (let i = 0; i < 7; i++) {
+        hopSquares += `<span style="display:inline-block;width:10px;height:10px;margin-right:1px;border:1px solid #bbb;vertical-align:middle;${i < hopCount ? 'background:#ffb533;' : 'background:#eee;'}"></span>`;
       }
-    });
-    map.addOverlay(overlay);
 
-    var selectedStyle = new ol.style.Style({
-      image: new ol.style.Circle({
-        radius: 6,
-        fill: new ol.style.Fill({
-          color: 'rgba(0, 0, 240, 1)'
-        }),
-        stroke: new ol.style.Stroke({
-          color: 'orange',
-          width: 2
-        })
-      })
-    });
-    var select = new ol.interaction.Select({
-      condition: ol.events.condition.click,
-      style: selectedStyle
-    });
-    map.addInteraction(select);
+      const hopSquaresHtml = `<span style="margin-left:5px;vertical-align:middle;" title="Hop Limit">${hopSquares}</span>`;
 
-    closer.onclick = function() {
-      select.getFeatures().clear();
-      neighborLayers.map(function(layer) {
-        map.removeLayer(layer);
-      });
-      neighborLayers = [];
-      overlay.setPosition(undefined);
-      closer.blur();
-      nodeTitle.innerHTML = '';
-      nodeSubtitle.innerHTML = '';
-      nodeContent.innerHTML = '';
-      $('#details').hide();
-      return false;
-    };
+      var panel = '<a href="node_' + node.id + '.html">' + node.short_name + ' / ' + node.id + '</a><br/><span style="display:block;height:5px"></span>'
+            + '<b>Pozice</b><br/>' + node.position + '<br/><span style="display:block;height:5px"></span>'
+            + '<b>Přesnost</b><br/>' + getPrecisionRadius(node.precision) + '<br/><span style="display:block;height:5px"></span>'
+            + '<b>Stav</b><br/>' + (node.online ? 'On-Line' : 'Off-Line') + '<br/><span style="display:block;height:5px"></span>'
+            + '<b>Role</b><br/>' + (nodeRole[node.role] || '???') + '<br/><span style="display:block;height:5px"></span>'
+            + '<b>Naposled slyšen před</b><br/>' + node.last_seen + '<br/><span style="display:block;height:5px"></span>';
+            
+          const radius = precisionToRadius[node.precision] || 0;
 
-    map.on('singleclick', async function (event) {
-      neighborLayers.map(function(layer) {
-        map.removeLayer(layer);
-      });
-      neighborLayers = [];
+          var circleFeature = new ol.Feature({
+            geometry: new ol.geom.Circle(ol.proj.fromLonLat(node.position), radius),
+          });
 
-      if (map.hasFeatureAtPixel(event.pixel) === true) {
-        $('#details').show();
-        var coordinate = event.coordinate;
-        var feature = map.forEachFeatureAtPixel(event.pixel, function(feature) {
-          return feature;
-        });
-        if (feature) {
-          var properties = feature.getProperties();
-          var node = properties.node;
-          var address = await reverseGeocode(node.position[0], node.position[1]);
-          var display_name = [address.address.town, address.address.city, address.address.county, address.address.state, address.address.country].filter(Boolean).join(', ');
+          var circleLayer = new ol.layer.Vector({
+            source: new ol.source.Vector({
+              features: [circleFeature]
+            }),
+            style: new ol.style.Style({
+              stroke: new ol.style.Stroke({
+                color: 'rgba(0, 0, 200, 0.5)',
+                width: 2
+              }),
+              fill: new ol.style.Fill({
+                color: 'rgba(0, 0, 200, 0.2)'
+              })
+            })
+          });
 
-          var panel = '<a href="node_' + node.id + '.html">' + node.short_name + ' / ' + node.id + '</a><br/><br/>'
-            + '<b>Position</b><br/>' + node.position + '<br/><br/>'
-            + '<b>Location</b><br/>' + display_name + '<br/><br/>'
-            + '<b>Status</b><br/>' + (node.online ? 'Online' : 'Offline') + '<br/><br/>'
-            + '<b>Last Seen</b><br/>' + node.last_seen + '<br/><br/>';
+          map.addLayer(circleLayer);
+          neighborLayers.push(circleLayer);
 
-          panel += '<b>Neighbors Heard</b><br/>';
+          panel += '<b>Slyší Sousedy</b><br/>';
           if (node.neighbors.length == 0) {
             panel += 'None';
           } else {
             panel += "<table class='table table-striped table-bordered table-sm'>";
-            panel += "<thead><tr><th>Node</th><th>SNR</th><th>Distance</th></tr></thead>";
+            panel += "<thead><tr><th>Uzel</th><th>SNR</th><th>Vzdálenost</th></tr></thead>";
             panel += "<tbody>";
             panel += node.neighbors.map(function(neighbor) {
               var nnode = nodes[neighbor.id];
               if (!nnode) {
-                return '<tr><td class="secondary-text">UNK</td><td>' + neighbor.snr + '</td><td></td></tr>';
+                return '<tr><td class="secondary-text">???</td><td>' + neighbor.snr + '</td><td></td></tr>';
               }
               const distance = Math.sqrt(
                 Math.pow(node.position[0] - nnode.position[0], 2) +
@@ -288,21 +375,49 @@
 
               var vectorLine = new ol.source.Vector({});
               vectorLine.addFeature(featureLine);
-
-              var vectorLineLayer = new ol.layer.Vector({
-                  source: vectorLine,
-                  style: new ol.style.Style({
-                      fill: new ol.style.Fill({ color: '#66FF66', weight: 8 }),
-                      stroke: new ol.style.Stroke({ color: '#66FF66', width: 4 })
-                  })
+             
+              var midPoint = [
+                (points[0][0] + points[1][0]) / 2,
+                (points[0][1] + points[1][1]) / 2
+              ];
+              
+              var midPointProjected = ol.proj.transform(midPoint, 'EPSG:4326', 'EPSG:3857');
+              
+              var snrText = new ol.style.Text({
+                text: 'SNR: ' + neighbor.snr,
+                font: '11px Calibri,sans-serif',
+                fill: new ol.style.Fill({
+                  color: '#000000'
+                }),
+                stroke: new ol.style.Stroke({
+                  color: '#ffffff',
+                  width: 2
+                }),
+                offsetX: 0,
+                offsetY: -15
               });
+              
+              snrText.setText('SNR: ' + neighbor.snr);
+              
+              var vectorLineLayer = new ol.layer.Vector({
+                source: vectorLine,
+                style: new ol.style.Style({
+                  stroke: new ol.style.Stroke({
+                    color: '#666666',
+                    width: 3,
+                    lineDash: [10, 10]
+                  }),
+                  text: snrText
+                })
+              });
+              
               neighborLayers.push(vectorLineLayer);
               map.addLayer(vectorLineLayer);
             });
           }
           panel += '<br/><br/>';
 
-          panel += '<b>Heard By Neighbors</b><br/>';
+          panel += '<b>Syšen Sousedy</b><br/>';
           var heard_by = Object.keys(nodes).filter(function(id) {
             return nodes[id].neighbors.some(function(neighbor) {
               return neighbor.id == node.id;
@@ -312,7 +427,7 @@
             panel += 'None<br/>';
           } else {
             panel += "<table class='table table-striped table-bordered table-sm'>";
-            panel += "<thead><tr><th>Node</th><th>SNR</th><th>Distance</th></tr></thead>";
+            panel += "<thead><tr><th>Uzel</th><th>SNR</th><th>Vzdálenost</th></tr></thead>";
             panel += "<tbody>";
             panel += heard_by.map(function(id) {
               var nnode = nodes[id];
@@ -320,9 +435,8 @@
                 return neighbor.id == node.id;
               });
               if (!nnode) {
-                return '<tr><td class="text-secondary">UNK</td><td>' + neighbor.snr + '</td><td></td></tr>';
+                return '<tr><td class="text-secondary">???</td><td>' + neighbor.snr + '</td><td></td></tr>';
               }
-              // calculate distance between two nodes without using ol.sphere
               const distance = Math.sqrt(
                 Math.pow(node.position[0] - nnode.position[0], 2) +
                 Math.pow(node.position[1] - nnode.position[1], 2)
@@ -332,7 +446,6 @@
             panel += "</tbody>";
             panel += "</table>";
 
-            // add the heard_by lines
             heard_by.map(function(id) {
               var nnode = nodes[id];
               if (!nnode || !nnode.position) {
@@ -352,14 +465,20 @@
               vectorLine.addFeature(featureLine);
 
               var lineStyle = new ol.style.Style({
-                  fill: new ol.style.Fill({ color: '#6666FF', weight: 8 }),
-                  stroke: new ol.style.Stroke({ color: '#6666FF', width: 4 })
+                stroke: new ol.style.Stroke({
+                  color: '#6666FF',
+                  width: 3,
+                  lineDash: [10, 10]
+                })
               });
-              // if the nnode is also a neighbor of the node, make the line purple
+
               if (node.neighbors.some(function(neighbor) { return neighbor.id == id; })) {
                 lineStyle = new ol.style.Style({
-                  fill: new ol.style.Fill({ color: '#FF66FF', weight: 8 }),
-                  stroke: new ol.style.Stroke({ color: '#FF66FF', width: 4 })
+                  stroke: new ol.style.Stroke({
+                    color: '#ffb533',
+                    width: 3,
+                    lineDash: [10, 10]
+                  })
                 });
               }
 
@@ -372,56 +491,826 @@
             });
           }
 
-          panel += '<br/>';
-
-          panel += '<b>Elsewhere</b><br/>';
-          var node_id = parseInt(node.id, 16);
-          panel += '<a href="https://meshview.zr1rf.za.net/packet_list/' + node_id + '" target="_blank">Armooo\'s MeshView</a><br/>';
-          panel += '<a href="https://meshtastic.liamcottle.net/?node_id=' + node_id + '" target="_blank">Liam\'s Map</a><br/>';
-          panel += '<a href="https://meshmap.net/#' + node_id + '" target="_blank">MeshMap</a><br/>';
-
-          //content.innerHTML = panel;
-          //overlay.setPosition(ol.proj.fromLonLat(node.position));
-
-          nodeTitle.innerHTML = node.long_name;
-          nodeSubtitle.innerHTML = node.short_name;
+          nodeTitle.innerHTML = node.long_name + ' ' + hopSquaresHtml;
           nodeContent.innerHTML = panel;
-        } else {
-          //content.innerHTML = '<b>Unknown</b>';
-          //overlay.setPosition(coordinate);
 
-          nodeTitle.innerHTML = 'Unknown';
-          nodeSubtitle.innerHTML = 'UNK';
-          nodeContent.innerHTML = '';
-          $('#details').hide();
+      if (window._highlightLayer) {
+        map.removeLayer(window._highlightLayer);
+        window._highlightLayer = null;
+      }
+      const feature = features.find(f => f.get('node') && f.get('node').id === node.id);
+      if (feature) {
+        const highlightLayer = new ol.layer.Vector({
+          source: new ol.source.Vector({ features: [feature] }),
+          zIndex: 9999
+        });
+        map.addLayer(highlightLayer);
+        window._highlightLayer = highlightLayer;
+        neighborLayers.push(highlightLayer);
+      }
+    };
+
+    // =========================
+    // INICIALIZACE MAPY A UZLŮ
+    // =========================
+    const default_position = {
+      latitude: 49.5,
+      longitude: 17.2,
+    };
+
+    var server_position = null;
+    {% if 'latitude' in config['mesh'] and 'longitude'in config['mesh'] %}
+      server_position = {
+        latitude: {{ config['mesh']['latitude'] }},
+        longitude: {{ config['mesh']['longitude'] }}
+      };
+    {% else %}
+      server_position = default_position;
+    {% endif %}
+
+    var server_zoom = null;
+    {% if 'zoom' in config['mesh'] %}
+      server_zoom = {{ config['mesh']['zoom'] }};
+    {% else %}
+      server_zoom = 10;
+    {% endif %}
+
+    const map = new ol.Map({
+      layers: [
+        new ol.layer.Tile({
+          preload: Infinity,
+          source: new ol.source.OSM(),
+        }),
+      ],
+      target: 'map',
+      view: new ol.View({
+        center: ol.proj.fromLonLat([server_position.longitude, server_position.latitude]),
+        zoom: server_zoom,
+      }),
+    });
+
+    // =========================
+    // DEFINICE STYLŮ UZLŮ
+    // =========================
+    var defaultStyle = new ol.style.Style({
+      image: new ol.style.Circle({
+        radius: 6,
+        fill: new ol.style.Fill({
+          color: 'rgba(0, 0, 240, 1)'
+        }),
+        stroke: new ol.style.Stroke({
+          color: 'white',
+          width: 1
+        })
+      }),
+      zIndex: 0
+    });
+
+    var offlineStyle = new ol.style.Style({
+      image: new ol.style.Circle({
+        radius: 6,
+        fill: new ol.style.Fill({
+          color: 'rgba(0, 0, 0, 0.50)'
+        }),
+        stroke: new ol.style.Stroke({
+          color: 'gray',
+          width: 1
+        })
+      }),
+      zIndex: 1
+    });
+
+    var onlineStyle = new ol.style.Style({
+      image: new ol.style.Circle({
+        radius: 6,
+        fill: new ol.style.Fill({
+          color: 'rgba(41, 201, 41,1)'
+        }),
+        stroke: new ol.style.Stroke({
+          color: 'gray',
+          width: 1
+        })
+      }),
+      zIndex: 2
+    });
+
+    var onlineRouterStyle = new ol.style.Style({
+      image: new ol.style.RegularShape({
+        points: 3,
+        radius: 8,
+        fill: new ol.style.Fill({
+          color: 'rgba(56, 159, 255,1)'
+        }),
+        stroke: new ol.style.Stroke({
+          color: 'gray',
+          width: 1
+        })
+      }),
+      zIndex: 3
+    });
+
+    var onlineRouterOtherStyle = new ol.style.Style({
+      image: new ol.style.RegularShape({
+        points: 3,
+        radius: 8,
+        fill: new ol.style.Fill({
+          color: 'rgba(158, 240, 50,1)'
+        }),
+        stroke: new ol.style.Stroke({
+          color: 'gray',
+          width: 1
+        })
+      }),
+      zIndex: 3
+    });
+
+    var offlineRouterStyle = new ol.style.Style({
+      image: new ol.style.RegularShape({
+        points: 3,
+        radius: 8,
+        fill: new ol.style.Fill({
+          color: 'rgba(0, 0, 0, 0.50)'
+        }),
+        stroke: new ol.style.Stroke({
+          color: 'gray',
+          width: 1
+        })
+      }),
+      zIndex: 1
+    });
+
+    // =========================
+    // VYTVÁŘENÍ UZLŮ A VRSTEV
+    // =========================
+    const nodes = {};
+    var neighborLayers = [];
+    {% for id, node in nodes.items() %}
+      {% if node.position is defined and node.position and node.position.longitude_i and node.position.latitude_i %}
+      nodes['{{ id }}'] = {
+        id: '{{ id }}',
+        short_name: '{{ node.short_name|replace("\\", "&#92;")|e }}',
+        long_name: '{{ node.long_name }}',
+        last_seen: '{{ node.last_seen }}',
+        role: '{{ node.role }}',
+        precision: '{{ node.position.precision_bits }}',
+        position: [{{ node.position.longitude_i / 10000000 }}, {{ node.position.latitude_i / 10000000 }}],
+        online: {% if node.active %}true{% else %}false{% endif %},
+        hop_start: {{ node.hop_start if node.hop_start is not none else 0 }}
+      };
+      {% if node.neighbors %}
+      nodes['{{ id }}'].neighbors = [
+        {% for neighbor in node.neighbors %}
+          {
+            id: '{{ utils.convert_node_id_from_int_to_hex(neighbor.neighbor_id) }}',
+            snr: '{{ neighbor.snr }}',
+            distance: '{{ neighbor.distance }}',
+          },
+        {% endfor %}
+      ];
+      {% else %}
+      nodes['{{ id }}'].neighbors = [];
+      {% endif %}
+      {% endif %}
+    {% endfor %}
+
+    const features = [];
+    const labelOffsets = {};
+
+    Object.values(nodes).forEach(function(node) {
+        if (node.position) {
+            const roundedLon = node.position[0].toFixed(6);
+            const roundedLat = node.position[1].toFixed(6);
+            const posKey = `${roundedLon},${roundedLat}`;
+
+            if (!labelOffsets[posKey]) {
+                labelOffsets[posKey] = 0;
+            }
+
+            const offsetIndex = labelOffsets[posKey];
+            labelOffsets[posKey] += 1;
+
+            const offsetY = -15 - (offsetIndex * 15);
+
+            const feature = new ol.Feature({
+                geometry: new ol.geom.Point(ol.proj.fromLonLat([parseFloat(roundedLon), parseFloat(roundedLat)])),
+                node: node,
+            });
+
+            const labelStyle = new ol.style.Style({
+                text: new ol.style.Text({
+                    text: node.short_name,
+                    font: 'bold 12px Calibri,sans-serif',
+                    fill: new ol.style.Fill({ color: '#000' }),
+                    stroke: new ol.style.Stroke({ color: '#fff', width: 2 }),
+                    offsetY: offsetY,
+                }),
+            });
+
+            let baseStyle;
+            if (node.role == 2) {
+                baseStyle = node.online ? onlineRouterStyle : offlineRouterStyle;
+            } else if (node.role == 3 || node.role == 11) {
+                baseStyle = node.online ? onlineRouterOtherStyle : offlineRouterStyle;
+            } else {
+                baseStyle = node.online ? onlineStyle : offlineStyle;
+            }
+
+            feature.setStyle([baseStyle, labelStyle]);
+            features.push(feature);
+        }
+    });
+
+
+    const layer = new ol.layer.Vector({
+      style: defaultStyle,
+      source: new ol.source.Vector({
+        features: features
+      })
+    });
+    map.addLayer(layer);
+
+    // =========================
+    // POPUP DETAILY A INTERAKCE
+    // =========================
+    var container = document.getElementById('nodeDetail');
+    var content = document.getElementById('popup-content');
+    var closer = document.getElementById('popup-closer');
+
+    var nodeDetails = document.getElementById('details');
+    var nodeTitle = document.getElementById('details-title');
+    var nodeContent = document.getElementById('details-content');
+
+    var overlay = new ol.Overlay({
+      element: container,
+      autoPan: true,
+      autoPanAnimation: {
+          duration: 250
+      }
+    });
+    map.addOverlay(overlay);
+
+    var selectedStyle = function(feature) {
+      // Vrací stejný styl jako při inicializaci feature: ikona + label
+      const node = feature.get('node');
+      let offsetY = -15;
+      if (node && node.position) {
+        const roundedLon = node.position[0].toFixed(6);
+        const roundedLat = node.position[1].toFixed(6);
+        const posKey = `${roundedLon},${roundedLat}`;
+        if (typeof labelOffsets !== 'undefined' && labelOffsets[posKey] !== undefined) {
+          const offsetIndex = labelOffsets[posKey] - 1;
+          offsetY = -15 - (offsetIndex * 15);
+        }
+      }
+      let baseStyle;
+      if (node) {
+        if (node.role == 2) {
+          baseStyle = node.online ? onlineRouterStyle : offlineRouterStyle;
+        } else if (node.role == 3 || node.role == 11) {
+          baseStyle = node.online ? onlineRouterOtherStyle : offlineRouterStyle;
+        } else {
+          baseStyle = node.online ? onlineStyle : offlineStyle;
+        }
+        const labelStyle = new ol.style.Style({
+          text: new ol.style.Text({
+            text: node.short_name,
+            font: 'bold 12px Calibri,sans-serif',
+            fill: new ol.style.Fill({ color: '#000' }),
+            stroke: new ol.style.Stroke({ color: '#fff', width: 2 }),
+            offsetY: offsetY,
+          })
+        });
+        return [baseStyle, labelStyle];
+      }
+      return [];
+    };
+    var select = new ol.interaction.Select({
+      condition: ol.events.condition.click,
+      style: selectedStyle
+    });
+    map.addInteraction(select);
+
+    closer.onclick = function() {
+      select.getFeatures().clear();
+      neighborLayers.map(function(layer) {
+        map.removeLayer(layer);
+      });
+      neighborLayers = [];
+      overlay.setPosition(undefined);
+      closer.blur();
+      nodeTitle.innerHTML = '';
+      nodeContent.innerHTML = '';
+      $('#details').hide();
+      return false;
+    };
+
+    map.on('pointermove', function (evt) {
+      const pixel = map.getEventPixel(evt.originalEvent);
+      let hit = false;
+      map.forEachFeatureAtPixel(pixel, function (feature) {
+        if (feature.getProperties().node) {
+          hit = true;
+        }
+      });
+      map.getTargetElement().style.cursor = hit ? 'pointer' : '';
+    });
+
+    // =========================
+    // KLIKÁNÍ NA MAPU - DETAILY UZLŮ
+    // =========================
+    map.on('singleclick', async function (event) {
+      neighborLayers.map(function(layer) {
+        map.removeLayer(layer);
+      });
+      neighborLayers = [];
+
+      const featuresAtPixel = [];
+      map.forEachFeatureAtPixel(event.pixel, function (feature, layer) {
+        featuresAtPixel.push(feature);
+      });
+
+      // Nová logika: najdi všechny featury, které mají vlastnost node (tedy i body i popisky)
+      const nodeFeatures = featuresAtPixel.filter(f => {
+        const props = f.getProperties();
+        return props.node !== undefined;
+      });
+
+      if (nodeFeatures.length > 0) {    
+        if (nodeFeatures.length === 1) {
+          const feature = nodeFeatures[0];
+          const properties = feature.getProperties();
+          const node = properties.node;
+          $('#details').show();
+          handleSingleNode(node);
+        } else {
+          const nodeList = nodeFeatures.map((feature) => feature.getProperties().node);
+          showNodeSelectionDialog(nodeList, function (selectedNode) {
+            $('#details').show();
+            handleSingleNode(selectedNode);
+          }, event.pixel);
         }
       } else {
-        //overlay.setPosition(undefined);
         nodeTitle.innerHTML = '';
-        nodeSubtitle.innerHTML = '';
         nodeContent.innerHTML = '';
         closer.blur();
         $('#details').hide();
       }
+
     });
     $('#details').hide();
+
+    setInterval(fetchNodeActivity, 15000);
+    fetchNodeActivity();
+
+
+    // =========================
+    // TERÉNNÍ NÁSTROJE
+    // =========================
+    let terrainMode = false;
+    let terrainPoints = [];
+    let terrainLineLayer = null;
+    let terrainProfileLayer = null;
+    let terrainLosLayer = null;
+
+    document.getElementById('terrain-btn').onclick = function() {
+        terrainMode = !terrainMode;
+        terrainPoints = [];
+
+        highestMode = false;
+        document.getElementById('highest-btn').style.backgroundColor = '';
+        document.getElementById('highest-btn').innerText = 'Nejvyšší bod';
+        if (highestPointLayer) {
+            map.removeLayer(highestPointLayer);
+            highestPointLayer = null;
+        }
+        if (highestCircleLayer) {
+            map.removeLayer(highestCircleLayer);
+            highestCircleLayer = null;
+        }
+        if (highestClickLayer) {
+            map.removeLayer(highestClickLayer);
+            highestClickLayer = null;
+        }
+        this.style.backgroundColor = terrainMode ? '#ffb533' : '';
+        this.innerText = terrainMode ? 'Vyberte 2 body' : 'Kresli Terén';
+        if (!terrainMode) {
+            document.getElementById('terrain-profile-modal')?.remove();
+        }
+    };
+
+    document.getElementById('highest-btn').onclick = function() {
+        highestMode = !highestMode;
+
+        terrainMode = false;
+        terrainPoints = [];
+        document.getElementById('terrain-btn').style.backgroundColor = '';
+        document.getElementById('terrain-btn').innerText = 'Kresli Terén';
+        if (terrainLineLayer) {
+            map.removeLayer(terrainLineLayer);
+            terrainLineLayer = null;
+        }
+        if (terrainProfileLayer) {
+            map.removeLayer(terrainProfileLayer);
+            terrainProfileLayer = null;
+        }
+        if (terrainLosLayer) {
+            map.removeLayer(terrainLosLayer);
+            terrainLosLayer = null;
+        }
+        this.style.backgroundColor = highestMode ? '#ff6666' : '';
+        this.innerText = highestMode ? 'Klikni do mapy' : 'Nejvyšší bod';
+        if (!highestMode) {
+            if (highestPointLayer) {
+                map.removeLayer(highestPointLayer);
+                highestPointLayer = null;
+            }
+            if (highestCircleLayer) {
+                map.removeLayer(highestCircleLayer);
+                highestCircleLayer = null;
+            }
+            if (highestClickLayer) {
+                map.removeLayer(highestClickLayer);
+                highestClickLayer = null;
+            }
+        }
+    };
+
+    map.on('singleclick', async function (event) {
+        if (terrainLineLayer) {
+            map.removeLayer(terrainLineLayer);
+            terrainLineLayer = null;
+        }
+        if (terrainProfileLayer) {
+            map.removeLayer(terrainProfileLayer);
+            terrainProfileLayer = null;
+        }
+        if (terrainLosLayer) {
+            map.removeLayer(terrainLosLayer);
+            terrainLosLayer = null;
+        }
+        if (!terrainMode) return;
+
+        const coord = ol.proj.toLonLat(event.coordinate);
+        terrainPoints.push(coord);
+
+        if (terrainLineLayer) {
+            map.removeLayer(terrainLineLayer);
+            terrainLineLayer = null;
+        }
+        if (terrainPoints.length > 0) {
+            const features = terrainPoints.map(pt =>
+                new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat(pt)) })
+            );
+            if (terrainPoints.length === 2) {
+                features.push(new ol.Feature({
+                    geometry: new ol.geom.LineString([
+                        ol.proj.fromLonLat(terrainPoints[0]),
+                        ol.proj.fromLonLat(terrainPoints[1])
+                    ])
+                }));
+            }
+            terrainLineLayer = new ol.layer.Vector({
+                source: new ol.source.Vector({ features }),
+                style: function(feature) {
+                    if (feature.getGeometry() instanceof ol.geom.Point) {
+                        return new ol.style.Style({
+                            image: new ol.style.Circle({
+                                radius: 7,
+                                fill: new ol.style.Fill({ color: '#ffb533' }),
+                                stroke: new ol.style.Stroke({ color: '#333', width: 2 })
+                            })
+                        });
+                    } else {
+                        return new ol.style.Style({
+                            stroke: new ol.style.Stroke({
+                                color: '#ffb533',
+                                width: 2,
+                                lineDash: [10, 10]
+                            })
+                        });
+                    }
+                }
+            });
+            map.addLayer(terrainLineLayer);
+        }
+
+        if (terrainPoints.length === 2) {
+            terrainMode = false;
+            document.getElementById('terrain-btn').style.backgroundColor = '';
+            document.getElementById('terrain-btn').innerText = 'Kresli Terén';
+
+            let loadingDiv = document.createElement('div');
+            loadingDiv.id = 'terrain-loading-center';
+            loadingDiv.innerText = 'Načítám terén...';
+            loadingDiv.style.position = 'fixed';
+            loadingDiv.style.top = '50%';
+            loadingDiv.style.left = '50%';
+            loadingDiv.style.transform = 'translate(-50%, -50%)';
+            loadingDiv.style.background = 'rgba(255,255,255,0.95)';
+            loadingDiv.style.padding = '30px 50px';
+            loadingDiv.style.borderRadius = '12px';
+            loadingDiv.style.boxShadow = '0 4px 24px rgba(0,0,0,0.15)';
+            loadingDiv.style.fontSize = '1.3em';
+            loadingDiv.style.zIndex = 2000;
+            document.body.appendChild(loadingDiv);
+
+            const [from, to] = terrainPoints;
+            try {
+                const resp = await fetch(`/api/terrain?from_lat=${from[1]}&from_lon=${from[0]}&to_lat=${to[1]}&to_lon=${to[0]}`);
+                const data = await resp.json();
+                document.getElementById('terrain-loading-center')?.remove();
+                drawTerrainProfileOnMap(data, from, to);
+            } catch (e) {
+                document.getElementById('terrain-loading-center')?.remove();
+                alert('Chyba při načítání profilu terénu.');
+            }
+            terrainPoints = [];
+        }
+    });
+
+    function drawTerrainProfileOnMap(profile, from, to) {
+        if (!Array.isArray(profile) || profile.length === 0) return;
+        const elevations = profile.map(p => Number(p.elevation));
+        const coords = profile.map(p => [p.lon, p.lat]);
+
+        const baseLine = coords.map(c => ol.proj.fromLonLat([c[0], c[1]]));
+
+        const minElev = Math.min(...elevations);
+        const maxElev = Math.max(...elevations);
+
+        const elevScale = 3000 / (maxElev - minElev + 1e-6);
+
+        const dx = baseLine[baseLine.length - 1][0] - baseLine[0][0];
+        const dy = baseLine[baseLine.length - 1][1] - baseLine[0][1];
+        const len = Math.sqrt(dx*dx + dy*dy);
+
+        let ox1 = -dy / len, oy1 = dx / len;
+        let ox2 = dy / len, oy2 = -dx / len;
+
+        const testPt = [
+            baseLine[0][0] + ox1 * 1000,
+            baseLine[0][1] + oy1 * 1000
+        ];
+        const px0 = map.getPixelFromCoordinate(baseLine[0]);
+        const pxTest = map.getPixelFromCoordinate(testPt);
+
+        let ox, oy;
+        if (pxTest[1] < px0[1]) {
+            ox = ox1;
+            oy = oy1;
+        } else {
+            ox = ox2;
+            oy = oy2;
+        }
+
+        const profileLine = baseLine.map((pt, i) => [
+            pt[0] + ox * (elevations[i] - minElev) * elevScale,
+            pt[1] + oy * (elevations[i] - minElev) * elevScale
+        ]);
+
+        if (terrainProfileLayer) {
+            map.removeLayer(terrainProfileLayer);
+            terrainProfileLayer = null;
+        }
+        if (terrainLosLayer) {
+            map.removeLayer(terrainLosLayer);
+            terrainLosLayer = null;
+        }
+
+        const losFeature = new ol.Feature({
+            geometry: new ol.geom.LineString([
+                profileLine[0],
+                profileLine[profileLine.length-1]
+            ])
+        });
+        terrainLosLayer = new ol.layer.Vector({
+            source: new ol.source.Vector({ features: [losFeature] }),
+            style: new ol.style.Style({
+                stroke: new ol.style.Stroke({
+                    color: '#888',
+                    width: 2,
+                    lineDash: [6, 8]
+                })
+            })
+        });
+        map.addLayer(terrainLosLayer);
+
+        terrainProfileLayer = new ol.layer.Vector({
+            source: new ol.source.Vector({ features: [new ol.Feature({
+                geometry: new ol.geom.LineString(profileLine)
+            })] }),
+            style: new ol.style.Style({
+                stroke: new ol.style.Stroke({
+                    color: '#007bff',
+                    width: 3
+                })
+            })
+        });
+
+        map.addLayer(terrainProfileLayer);
+    }
+
+    // =========================
+    // NAJDI NEJVYŠŠÍ BOD
+    // =========================
+    let highestMode = false;
+    let highestPointLayer = null;
+    let highestCircleLayer = null;
+    let highestClickLayer = null;
+    document.getElementById('highest-btn').onclick = function() {
+        highestMode = !highestMode;
+        this.style.backgroundColor = highestMode ? '#ff6666' : '';
+        this.innerText = highestMode ? 'Klikni do mapy' : 'Nejvyšší bod';
+        if (!highestMode) {
+            if (highestPointLayer) {
+                map.removeLayer(highestPointLayer);
+                highestPointLayer = null;
+            }
+            if (highestCircleLayer) {
+                map.removeLayer(highestCircleLayer);
+                highestCircleLayer = null;
+            }
+            if (highestClickLayer) {
+                map.removeLayer(highestClickLayer);
+                highestClickLayer = null;
+            }
+        }
+    };
+
+    map.on('singleclick', async function (event) {
+        if (highestPointLayer) {
+            map.removeLayer(highestPointLayer);
+            highestPointLayer = null;
+        }
+        if (highestCircleLayer) {
+            map.removeLayer(highestCircleLayer);
+            highestCircleLayer = null;
+        }
+        if (highestClickLayer) {
+            map.removeLayer(highestClickLayer);
+            highestClickLayer = null;
+        }
+        if (!highestMode) return;
+
+        let perimeter = 5000;
+        let input = window.prompt('Zadejte velikost okruhu v metrech (max 5000):', '5000');
+        if (input === null) return; // zrušeno
+        input = parseInt(input);
+        if (isNaN(input) || input < 1) input = 5000;
+        if (input > 5000) input = 5000;
+        perimeter = input;
+
+        let loadingDiv = document.createElement('div');
+        loadingDiv.id = 'highest-loading-center';
+        loadingDiv.innerText = 'Hledám nejvyšší bod...';
+        loadingDiv.style.position = 'fixed';
+        loadingDiv.style.top = '50%';
+        loadingDiv.style.left = '50%';
+        loadingDiv.style.transform = 'translate(-50%, -50%)';
+        loadingDiv.style.background = 'rgba(255,255,255,0.95)';
+        loadingDiv.style.padding = '30px 50px';
+        loadingDiv.style.borderRadius = '12px';
+        loadingDiv.style.boxShadow = '0 4px 24px rgba(0,0,0,0.15)';
+        loadingDiv.style.fontSize = '1.3em';
+        loadingDiv.style.zIndex = 2000;
+        document.body.appendChild(loadingDiv);
+
+        const coord = ol.proj.toLonLat(event.coordinate);
+        const circleCoords = geodeticCirclePolygon(coord[0], coord[1], perimeter, 80);
+        const circleFeature = new ol.Feature({
+            geometry: new ol.geom.Polygon([circleCoords])
+        });
+        highestCircleLayer = new ol.layer.Vector({
+            source: new ol.source.Vector({ features: [circleFeature] }),
+            style: new ol.style.Style({
+                stroke: new ol.style.Stroke({ color: '#ff2222', width: 2, lineDash: [8, 8] }),
+                fill: new ol.style.Fill({ color: 'rgba(255,34,34,0.08)' })
+            })
+        });
+        map.addLayer(highestCircleLayer);
+
+        try {
+            const elevResp = await fetch(`/api/elevation?lat=${coord[1]}&lon=${coord[0]}`);
+            const elevData = await elevResp.json();
+            if (elevData && elevData.elevation !== undefined) {
+                const clickFeature = new ol.Feature({ geometry: new ol.geom.Point(event.coordinate) });
+                const clickStyle = new ol.style.Style({
+                    image: new ol.style.Circle({
+                        radius: 8,
+                        fill: new ol.style.Fill({ color: '#2222ff' }),
+                        stroke: new ol.style.Stroke({ color: '#fff', width: 2 })
+                    }),
+                    text: new ol.style.Text({
+                        text: `${Math.round(elevData.elevation)} m`,
+                        font: 'bold 13px Calibri,sans-serif',
+                        fill: new ol.style.Fill({ color: '#2222ff' }),
+                        stroke: new ol.style.Stroke({ color: '#fff', width: 3 }),
+                        offsetY: -18
+                    })
+                });
+                clickFeature.setStyle(clickStyle);
+                highestClickLayer = new ol.layer.Vector({
+                    source: new ol.source.Vector({ features: [clickFeature] })
+                });
+                map.addLayer(highestClickLayer);
+            }
+        } catch (e) {
+            // ignoruj chybu
+        }
+
+        try {
+            const resp = await fetch(`/api/highest_point?lat=${coord[1]}&lon=${coord[0]}&perimeter=${perimeter}`);
+            const data = await resp.json();
+            document.getElementById('highest-loading-center')?.remove();
+            if (Array.isArray(data) && data.length > 0) {
+                const features = data.map((pt, idx) => {
+                    const highestCoord = ol.proj.fromLonLat([pt.lon, pt.lat]);
+                    let style;
+                    if (idx === 0) {
+                        style = new ol.style.Style({
+                            image: new ol.style.Circle({
+                                radius: 11,
+                                fill: new ol.style.Fill({ color: '#ff2222' }),
+                                stroke: new ol.style.Stroke({ color: '#fff', width: 3 })
+                            }),
+                            text: new ol.style.Text({
+                                text: `${Math.round(pt.elevation)} m`,
+                                font: 'bold 14px Calibri,sans-serif',
+                                fill: new ol.style.Fill({ color: '#ff2222' }),
+                                stroke: new ol.style.Stroke({ color: '#fff', width: 3 }),
+                                offsetY: -18
+                            })
+                        });
+                    } else {
+                        style = new ol.style.Style({
+                            image: new ol.style.Circle({
+                                radius: 9,
+                                fill: new ol.style.Fill({ color: '#ffaa22' }),
+                                stroke: new ol.style.Stroke({ color: '#fff', width: 2 })
+                            }),
+                            text: new ol.style.Text({
+                                text: `${Math.round(pt.elevation)} m`,
+                                font: 'bold 12px Calibri,sans-serif',
+                                fill: new ol.style.Fill({ color: '#ffaa22' }),
+                                stroke: new ol.style.Stroke({ color: '#fff', width: 2 }),
+                                offsetY: -16
+                            })
+                        });
+                    }
+                    const feature = new ol.Feature({ geometry: new ol.geom.Point(highestCoord) });
+                    feature.setStyle(style);
+                    return feature;
+                });
+                highestPointLayer = new ol.layer.Vector({
+                    source: new ol.source.Vector({ features })
+                });
+                map.addLayer(highestPointLayer);
+            }
+        } catch (e) {
+            document.getElementById('highest-loading-center')?.remove();
+            alert('Chyba při hledání nejvyššího bodu.');
+        }
+
+        highestMode = false;
+        document.getElementById('highest-btn').style.backgroundColor = '';
+        document.getElementById('highest-btn').innerText = 'Nejvyšší bod';
+    });
   </script>
   <style>
+    /* =========================
+       MAPA A ROZVRŽENÍ
+    ========================= */
     #map {
       height: 100%;
       width: 100%;
     }
     #legend {
       position: absolute;
-      bottom: 20px;
-      right: 20px;
+      bottom: 10px;
+      right: 10px;
       z-index: 1000;
+    }
+    #tools {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      z-index: 1000;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+      padding: 10px 8px;
+      min-width: 90px;
+      max-width: 140px;
+      width: max-content;
+      background: #fff;
     }
     #details {
       position: absolute;
-      top: 20px;
-      right: 20px;
-      z-index: 1000;
+      top: 65px;
+      right: 10px;
+      z-index: 2001;
+      max-width: 95vw;
+      max-height: 80vh;
+      overflow: auto;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.18);
     }
     .ol-popup {
       position: absolute;
@@ -465,4 +1354,31 @@
       content: "x";
     }
   </style>
+  @media (max-width: 600px) {
+  /* =========================
+     RESPONSIVNÍ STYLY
+  ========================= */
+  #legend {
+    right: 10px;
+    bottom: 10px;
+    font-size: 0.95em;
+    z-index: 1000;
+  }
+  #tools {
+    left: 10px;
+    bottom: 10px;
+    min-width: 70px;
+    max-width: 120px;
+    font-size: 0.95em;
+    padding: 7px 4px;
+    z-index: 1000;
+  }
+  #details {
+    right: 2vw;
+    top: 10vw;
+    max-width: 96vw;
+    max-height: 70vh;
+    z-index: 2002;
+  }
+}
 {% endblock %}

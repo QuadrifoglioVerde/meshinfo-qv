@@ -38,7 +38,16 @@ def connect_mqtt() -> mqtt_client:
         )
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
-    client.connect(config["mqtt"]["broker"], int(config["mqtt"]["port"]))
+    # Opakuj připojení periodicky dokud se nepodaří
+    while True:
+        try:
+            client.connect(config["mqtt"]["broker"], int(config["mqtt"]["port"]))
+            logger.info("Successfully connected to MQTT Broker!")
+            break
+        except Exception as e:
+            logger.error(f"Initial connection failed: {e}. Retrying in 30 seconds...")
+            time.sleep(30)
+
     return client
 
 

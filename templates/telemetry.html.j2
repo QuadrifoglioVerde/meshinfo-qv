@@ -1,16 +1,19 @@
 {% set this_page = "telemetry" %}
 {% extends "layout.html.j2" %}
 
-{% block title %}Telemetry | MeshInfo{% endblock %}
+{% block title %}Telemetrie | MeshInfo{% endblock %}
 
 {% block content %}
 <div class="container pt-3">
-  <h5>{{ this_page.title() }}</h5>
+  <h5>Telemetrie</h5>
+  <p class="mb-2">
+    Posledních 500 paketů telemetrie.
+  </p>
   <table class="table table-striped table-bordered table-sm">
     <thead>
       <tr>
-        <th scope="col">Timestamp</th>
-        <th scope="col">Node</th>
+        <th scope="col">Čas</th>
+        <th scope="col">Uzel</th>
         <th scope="col">
           <img src="images/icons/up.svg" alt="Air Util TX" title="Air Util TX" style="height:18px">
         </th>
@@ -49,7 +52,7 @@
       {% set inode = nodes[inodeid] %}
       <tr>
         <td>
-          {{ datetime.fromtimestamp(item.ts_created).strftime("%Y-%m-%d %H:%M:%S") }}
+          {{ datetime.fromtimestamp(item.ts_created).strftime("%d.%m.%Y %H:%M:%S") }}
         </td>
         <td>
           {% if inode %}

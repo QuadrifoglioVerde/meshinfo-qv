@@ -1,0 +1,106 @@
+{% set this_page = "chat_mobile" %}
+{% extends "layout.html.j2" %}
+
+{% block title %}Chat (Mobilní) | MeshInfo{% endblock %}
+
+{% block content %}
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  .container-fluid {
+    height: calc(100vh - 56px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  #chatConsole {
+    flex: 1;
+    background-color: #f8f9fa;
+    padding: 10px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 14px;
+  }
+
+  @media (max-width: 768px) {
+    .container-fluid {
+      height: calc(100vh - 100px);
+    }
+    #chatConsole {
+      font-size: 12px;
+    }
+  }
+</style>
+
+<div class="container-fluid p-0">
+  <div class="bg-light p-2 border-bottom">
+    <h5 class="m-0">Chat (Mobil)</h5>
+    <p class="m-0" style="font-size: 14px;">Posledních 100 zpráv. (Aktualizuje se po 15s)</p>
+  </div>
+  <div id="chatConsole">
+    {% for message in chat %}
+    <div>
+      <span style="color: gray;">{{ datetime.fromtimestamp(message['ts_created']).strftime('%H:%M:%S') }}</span>
+      {% if message["from"] in nodes %}
+      <span style="color: blue;">[{{ nodes[message["from"]].short_name }}]</span>
+      {% else %}
+      <span style="color: blue;">[{{ message["from"] }}]</span>
+      {% endif %}
+      <span>{{ message["text"] }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+function renderChat(data) {
+  const chatConsole = document.getElementById('chatConsole');
+  chatConsole.innerHTML = '';
+  data.slice().reverse().forEach(message => {
+    const messageDiv = document.createElement('div');
+
+    // Čas
+    const timeSpan = document.createElement('span');
+    const timestamp = new Date(message.ts_created * 1000);
+    timeSpan.textContent = timestamp.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    timeSpan.style.color = 'gray';
+    messageDiv.appendChild(timeSpan);
+
+    // Od Uzlu
+    const fromSpan = document.createElement('span');
+    fromSpan.style.color = 'blue';
+    if (message.from_name) {
+      fromSpan.textContent = ` [${message.short_name}]`;
+    } else {
+      fromSpan.textContent = ` [${message.from}]`;
+    }
+    messageDiv.appendChild(fromSpan);
+
+    // Zpráva
+    const textSpan = document.createElement('span');
+    textSpan.textContent = ` ${message.text}`;
+    messageDiv.appendChild(textSpan);
+
+    chatConsole.prepend(messageDiv);
+  });
+}
+
+function fetchChatMessages() {
+  fetch('/api/chat')
+    .then(response => response.json())
+    .then(renderChat)
+    .catch(error => console.error('Chyba při načítání zpráv:', error));
+}
+
+window.addEventListener('DOMContentLoaded', fetchChatMessages);
+setInterval(fetchChatMessages, 15000);
+</script>
+{% endblock %}
